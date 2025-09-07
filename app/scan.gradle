@@ -1,0 +1,252 @@
+import groovy.json.JsonOutput
+import javax.xml.parsers.DocumentBuilderFactory
+
+def extractColorsFromXml(File xmlFile) {
+    def colors = [] as Set
+    if (!xmlFile.exists() || !xmlFile.name.endsWith(".xml")) return colors
+    def text = xmlFile.getText("UTF-8")
+    def matcher = (text =~ /#[0-9a-fA-F]{3,8}\b/)
+    matcher.each { colors << it }
+    return colors.toList()
+}
+
+def extractTextFromLayoutXml(File xmlFile) {
+    def texts = [] as Set
+    if (!xmlFile.exists() || !xmlFile.name.endsWith(".xml")) return texts
+    def text = xmlFile.getText("UTF-8")
+    def matcher = (text =~ /android:text="([^"]+)"/)
+    matcher.each { full, value ->
+        if (!value.startsWith("@")) texts << value
+    }
+    return texts.toList()
+}
+
+def writeJson(File file, Object data) {
+    def json = JsonOutput.toJson(data)
+    json = JsonOutput.prettyPrint(json)
+    json = json.replaceAll("\\\\u([0-9a-fA-F]{4})") { full, hex ->
+        (char) Integer.parseInt(hex, 16)
+    }
+    file.text = json
+}
+
+def scanCodeForColorsAndTexts(File dir) {
+    def colors = [] as Set
+    def classTextList = [] as List
+
+    if (!dir.exists()) return [colors: [], classTextList: []]
+
+    dir.eachFileRecurse { f ->
+        if (f.isFile() && (f.name.endsWith(".java") || f.name.endsWith(".kt"))) {
+            def content = f.getText("UTF-8")
+
+            // --- 类名 + 包名 ---
+            def packageMatch = (content =~ /package\s+([\w\.]+);/)
+            def packageName = packageMatch ? packageMatch[0][1] : ""
+            def className = f.name.replaceAll(/\.(java|kt)$/, "")
+            def fullClassName = packageName ? "${packageName}.${className}" : className
+
+            // --- 扫描颜色 ---
+            def colorMatches = (content =~ /#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b/)
+            colorMatches.each { colors << it }
+            def hexMatches = (content =~ /0x[0-9a-fA-F]{6,8}/)
+            hexMatches.each { colors << it }
+
+            // --- 扫描文本 ---
+            def textMatches = (content =~ /"(.*?)"/)
+            def textsChinese = [] as Set
+            def textsOther = [] as Set
+            textMatches.each { full, value ->
+                if (!value.startsWith("R.") && value.trim()) {
+                    if (value =~ /[\u4e00-\u9fff]/) {
+                        textsChinese << value
+                    } else {
+                        textsOther << value
+                    }
+                }
+            }
+
+            // 只有 text 或 others 非空才加入列表
+            if (!textsChinese.isEmpty() || !textsOther.isEmpty()) {
+                classTextList << [
+                        class : fullClassName,
+                        text  : textsChinese.toList(),
+                        others: textsOther.toList()
+                ]
+            }
+        }
+    }
+
+    return [colors: colors.toList(), classTextList: classTextList]
+}
+
+
+tasks.register("scanResources") {
+    group = "branding"
+    description = "Scan resources, manifest, and gradle config, export to JSON"
+
+    doLast {
+        def resDir = file("src/main/res")
+        def manifestFile = file("src/main/AndroidManifest.xml")
+        def result = [
+                gradle         : [:],
+                manifest       : [:],
+                strings        : [],
+                colors         : [],
+                drawables      : [],
+                mipmaps        : [],
+                layouts        : [],
+                raws           : [],
+                anims          : [],
+                animators      : [],
+                fonts          : [],
+                menus          : [],
+                xmls           : [],
+                layoutsColors  : [:],
+                drawableColors : [:],
+                layoutsText    : [:]
+        ]
+
+        // --- Gradle 配置 ---
+        def defaultConfig = android.defaultConfig
+        result.gradle.applicationId = defaultConfig.applicationId
+        result.gradle.versionName = defaultConfig.versionName
+        result.gradle.versionCode = defaultConfig.versionCode
+        if (!defaultConfig.manifestPlaceholders.isEmpty()) {
+            result.gradle.manifestPlaceholders = defaultConfig.manifestPlaceholders
+        }
+
+        // --- strings.xml ---
+        resDir.eachDirMatch(~/values.*/) { dir ->
+            def locale = dir.name == "values" ? "default" : dir.name.replace("values-", "")
+            def stringsFile = new File(dir, "strings.xml")
+            if (stringsFile.exists()) {
+                def items = []
+                def doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(stringsFile)
+                doc.getDocumentElement().normalize()
+                def nodes = doc.getElementsByTagName("string")
+                for (int i = 0; i < nodes.length; i++) {
+                    def node = nodes.item(i)
+                    items << [name: node.getAttribute("name"), value: node.getTextContent()]
+                }
+                if (!items.isEmpty()) result.strings << [locale: locale, items: items]
+            }
+        }
+
+        // --- colors.xml ---
+        def colorsFile = new File(resDir, "values/colors.xml")
+        if (colorsFile.exists()) {
+            def colorsList = []
+            def doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(colorsFile)
+            doc.getDocumentElement().normalize()
+            def nodes = doc.getElementsByTagName("color")
+            for (int i = 0; i < nodes.length; i++) {
+                def node = nodes.item(i)
+                colorsList << [name: node.getAttribute("name"), value: node.getTextContent()]
+            }
+            result.colors = colorsList
+        }
+
+        // --- drawable & drawableColors ---
+        resDir.eachDirMatch(~/drawable.*/) { dir ->
+            dir.eachFileRecurse { f ->
+                if (f.isFile()) {
+                    result.drawables << [file: f.path.replace(project.projectDir.path + "/", "")]
+                    if (f.name.endsWith(".xml")) {
+                        def colors = extractColorsFromXml(f)
+                        if (!colors.isEmpty()) result.drawableColors[f.name.replace(".xml","")] = colors
+                    }
+                }
+            }
+        }
+
+        // --- mipmap ---
+        resDir.eachDirMatch(~/mipmap.*/) { dir ->
+            dir.eachFileRecurse { f ->
+                if (f.isFile()) result.mipmaps << [file: f.path.replace(project.projectDir.path + "/", "")]
+            }
+        }
+
+        // --- layout & layoutsColors / layoutsText ---
+        def layoutDir = new File(resDir, "layout")
+        if (layoutDir.exists()) {
+            layoutDir.eachFileRecurse { f ->
+                if (f.isFile() && f.name.endsWith(".xml")) {
+                    result.layouts << [file: f.path.replace(project.projectDir.path + "/", "")]
+                    def key = f.name.replace(".xml","")
+                    def colors = extractColorsFromXml(f)
+                    if (!colors.isEmpty()) result.layoutsColors[key] = colors
+                    def texts = extractTextFromLayoutXml(f)
+                    if (!texts.isEmpty()) result.layoutsText[key] = texts
+                }
+            }
+        }
+
+        // --- 其他资源目录 ---
+        ["raw", "anim", "animator", "font", "menu", "xml"].each { type ->
+            def dir = new File(resDir, type)
+            if (dir.exists()) {
+                dir.eachFileRecurse { f ->
+                    if (f.isFile()) result[type + "s"] << [file: f.path.replace(project.projectDir.path + "/", "")]
+                }
+            }
+        }
+
+        // --- Manifest ---
+        if (manifestFile.exists()) {
+            def doc = DocumentBuilderFactory.newInstance().newDocumentBuilder().parse(manifestFile)
+            def manifestNode = doc.getDocumentElement()
+            result.manifest.packageName = manifestNode.getAttribute("package")
+            def appNode = doc.getElementsByTagName("application").item(0)
+            if (appNode != null) result.manifest.appLabel = appNode.getAttribute("android:label")
+            def dataNodes = doc.getElementsByTagName("data")
+            def schemes = []
+            for (int i = 0; i < dataNodes.length; i++) {
+                def scheme = dataNodes.item(i).getAttribute("android:scheme")
+                if (scheme) schemes << scheme
+            }
+            if (!schemes.isEmpty()) result.manifest.schemes = schemes.unique()
+        }
+
+
+        // --- 扫描代码 (.java + .kt) ---
+        def codeDirs = [file("src/main/java"), file("src/main/kotlin")]
+        def codeColors = [] as Set
+        def codeTextList = [] as List
+
+        codeDirs.each { dir ->
+            if (dir.exists()) {
+                def scan = scanCodeForColorsAndTexts(dir)
+                codeColors.addAll(scan.colors)
+                codeTextList.addAll(scan.classTextList)
+            }
+        }
+
+        result.codeColors = codeColors.toList()
+        result.codeTexts = codeTextList
+
+        // --- 输出完整 JSON ---
+        def fullFile = new File(buildDir, "resource_list_full.json")
+        fullFile.parentFile.mkdirs()
+        writeJson(fullFile, result)
+
+        // --- 输出轻量 JSON（图片 + 文本 + 颜色） ---
+        def lightResult = [
+                strings        : result.strings,
+                colors         : result.colors,
+                drawables      : result.drawables,
+                mipmaps        : result.mipmaps,
+                layoutsText    : result.layoutsText,
+                layoutsColors  : result.layoutsColors,
+                drawableColors : result.drawableColors,
+                codeColors     : result.codeColors,
+                codeTexts      : result.codeTexts
+        ]
+        def lightFile = new File(buildDir, "resource_list_light.json")
+        writeJson(lightFile, lightResult)
+
+        println "✅ Full resource list exported to: ${fullFile}"
+        println "✅ Light resource list exported to: ${lightFile}"
+    }
+
+}
