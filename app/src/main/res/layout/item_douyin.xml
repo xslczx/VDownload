@@ -38,6 +38,7 @@
         android:scrollbarThumbHorizontal="@drawable/custom_scrollbar_thumb"
         android:overScrollMode="ifContentScrolls"
         android:scrollbarSize="6dp"
+        android:fillViewport="true"
         android:scrollbars="horizontal">
 
         <LinearLayout

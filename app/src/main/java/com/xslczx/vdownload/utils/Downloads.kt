@@ -1,6 +1,14 @@
 package com.xslczx.vdownload.utils
 
+import android.Manifest
+import android.app.Application
+import android.os.Environment
 import android.util.Log
+import com.blankj.utilcode.util.FileUtils
+import com.blankj.utilcode.util.PermissionUtils
+import com.blankj.utilcode.util.Utils
+import com.xslczx.vdownload.Media
+import com.xslczx.vdownload.MyApp
 import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -15,7 +23,6 @@ import java.util.concurrent.TimeUnit
  */
 suspend fun downloadSingle(
     url: String,
-    destDir: File,
     client: OkHttpClient,
     onProgress: (Int) -> Unit = {},
     retries: Int = 2
@@ -36,17 +43,36 @@ suspend fun downloadSingle(
                 }
             } catch (_: Exception) {}
 
+            val detectedMedia = MediaTypeDetector.detect(contentType = contentType)
+
+            // 提取 URL 文件名并结合响应头推断后缀
+            val urlPath = URL(url).path
             val result = ExtensionGuesser.guessBestExtension(url, contentType, contentDisposition)
-            if (result.conflictWithMime) {
-                Log.w(">>>:ExtGuesser", "Content-Type 和选中的后缀冲突")
+
+            val rawName = File(urlPath).name.takeIf { it.isNotBlank() }?.substringBeforeLast(".") ?: "download"
+            val sanitizedRawName = sanitizeFileName(rawName)
+
+            val type = when (detectedMedia.category) {
+                MediaCategory.AUDIO -> Environment.DIRECTORY_MUSIC
+                MediaCategory.VIDEO -> Environment.DIRECTORY_MOVIES
+                MediaCategory.IMAGE -> Environment.DIRECTORY_PICTURES
+                else -> Environment.DIRECTORY_DOWNLOADS
             }
-            if (result.conflictWithUrlExt) {
-                Log.w(">>>:ExtGuesser", "URL 本身的后缀与选中不同")
+            val granted = PermissionUtils.isGranted(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            val file = if (granted) Environment.getExternalStoragePublicDirectory(type) else Utils.getApp().getExternalFilesDir(null)!!
+            if (!file.exists()) {
+                file.mkdirs()
             }
-            val urlObj = URL(url)
-            val rawName = File(urlObj.path).name.takeIf { it.isNotBlank() }?.substringBeforeLast(".") ?: "download"
-            val targetFile = ExtensionGuesser.uniqueFile(destDir, rawName, result.extension)
-            val tmpFile = File(destDir, "${targetFile.nameWithoutExtension}.${result.extension}.part")
+
+            // 生成唯一的目标文件
+            val targetFile = ExtensionGuesser.uniqueFile(file, sanitizedRawName, result.extension)
+
+            // 创建临时文件，使用目标文件名的一部分
+            val tmpFile = File(MyApp.instance.cacheDir, "${targetFile.nameWithoutExtension}.${result.extension}.part")
+
+            // 打印文件路径进行调试
+            Log.d(">>>>:FilePaths", "Target file: ${targetFile.absolutePath}, Temp file: ${tmpFile.absolutePath}")
+
 
             // GET 下载
             val getReq = Request.Builder().url(url).get().build()
@@ -81,7 +107,7 @@ suspend fun downloadSingle(
                     tmpFile.delete()
                 }
             }
-            val detectedMedia = MediaTypeDetector.detect(contentType = contentType, file = targetFile)
+
             return@withContext DownloadResult(file = targetFile, media = detectedMedia.category)
         } catch (e: Exception) {
             lastEx = e
@@ -91,20 +117,27 @@ suspend fun downloadSingle(
     DownloadResult(exception = lastEx)
 }
 
+private fun sanitizeFileName(rawFileName: String): String {
+    return rawFileName
+        .replace("[^a-zA-Z0-9._-]".toRegex(), "_")
+        .replace("~", "_")
+        .replace(":", "_")
+        .trim()
+        .ifEmpty { "download" }
+}
+
 
 /**
  * 批量并发下载入口
  */
 fun downloadAllMedia(
-    urls: List<String>,
-    destDir: File,
+    urls: List<Media>,
     concurrency: Int = 3,
     scope: CoroutineScope,
     onEachProgress: (url: String, progress: Int) -> Unit = { _, _ -> },
     onOverallProgress: (overallPercent: Int) -> Unit = {},
     onAllComplete: (Map<String, DownloadResult>) -> Unit
 ): Job {
-    require(destDir.exists() || destDir.mkdirs())
     val client = OkHttpClient.Builder()
         .followRedirects(true)
         .followSslRedirects(true)
@@ -113,35 +146,35 @@ fun downloadAllMedia(
 
     // 保存每个 url 当前的进度 0..100
     val progressMap = ConcurrentHashMap<String, Int>()
-    urls.forEach { progressMap[it] = 0 } // 初始化为 0
+    urls.forEach { progressMap[it.path] = 0 } // 初始化为 0
 
     // 计算总体进度（所有 url 的进度平均，带权重）
     fun computeOverall(): Int {
         val total = urls.size * 100
-        val sum = urls.sumOf { progressMap[it] ?: 0 }
+        val sum = urls.sumOf { progressMap[it.path] ?: 0 }
         return ((sum * 100) / total).coerceIn(0, 100) // 0..100
     }
 
     val semaphore = Semaphore(concurrency)
     return scope.launch {
-        val deferreds = urls.mapIndexed { index, url ->
+        val deferreds = urls.map { media ->
             async {
                 semaphore.withPermit {
-                    val result = downloadSingle(url, destDir, client, onProgress = { p ->
-                        progressMap[url] = p
+                    val result = downloadSingle(media.path, client, onProgress = { p ->
+                        progressMap[media.path] = p
                         // 每个 url 的单独回调
-                        onEachProgress(url, p)
+                        onEachProgress(media.path, p)
                         // 计算并反馈整体进度（包含前面已完成的 index 和当前的部分进度）
                         onOverallProgress(computeOverall())
                     })
 
                     // 如果成功，确保进度置为 100，再刷新一次整体
                     if (result.file != null) {
-                        progressMap[url] = 100
+                        progressMap[media.path] = 100
                         onOverallProgress(computeOverall())
                     }
 
-                    url to result
+                    media.path to result
                 }
             }
         }

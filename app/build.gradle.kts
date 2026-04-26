@@ -65,5 +65,7 @@ dependencies {
     ksp("com.squareup.moshi:moshi-kotlin-codegen:1.14.0")
 
     implementation("com.github.bumptech.glide:glide:4.16.0")
+    ksp("com.github.bumptech.glide:compiler:4.16.0")
+
     implementation("com.kongzue.dialogx:DialogX:0.0.49")
 }

@@ -1,12 +1,19 @@
 package com.xslczx.vdownload
 
+import android.Manifest
 import android.app.Application
+import android.content.pm.PackageManager
+import android.media.MediaScannerConnection
+import android.os.Environment
 import android.util.Log
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
+import com.blankj.utilcode.util.FileUtils
 import com.xslczx.vdownload.databse.AppDatabase
 import com.xslczx.vdownload.databse.DouyinVideo
+import com.xslczx.vdownload.utils.DownloadResult
 import com.xslczx.vdownload.utils.MediaCategory
 import com.xslczx.vdownload.utils.downloadAllMedia
 import com.xslczx.vdownload.utils.extractUrlFromClipboard
@@ -14,7 +21,7 @@ import com.xslczx.vdownload.utils.fetchVideoInfo
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.util.UUID
+import java.io.File
 
 class DouyinViewModel(application: Application) : AndroidViewModel(application) {
     private val db = AppDatabase.getInstance(application)
@@ -82,7 +89,7 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
                 withContext(Dispatchers.Main) {
                     onStep("正在解析链接…")
                 }
-                val apiResponse = fetchVideoInfo(url, UUID.randomUUID().toString().lowercase()) //这appKey还是随便写一个吧
+                val apiResponse = fetchVideoInfo(url, "7e8c673248ef697b9697a563cf288ae1") //这appKey还是随便写一个吧
                 val data = apiResponse?.data
                 if (data == null) {
                     withContext(Dispatchers.Main) {
@@ -91,24 +98,29 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
                     return@launch
                 }
 
-                val urls = mutableSetOf<String>()
+                val urls = mutableSetOf<Media>()
 
-                data.video?.let { urls.add(it) }
-                data.atlas?.let { urls.addAll(it) }
-                data.image?.let { urls.add(it) }
-                data.url?.let { urls.add(it) }
+                if (!data.video.isNullOrEmpty()) {
+                    data.video.let { urls.add(Media(it,true)) }
+                } else if (!data.image.isNullOrEmpty()) {
+                    data.image.let { urls.add(Media(it,false)) }
+                }
+
+                if (urls.isEmpty()) {
+                    data.atlas?.forEach {
+                        urls.add(Media(it,false))
+                    }
+                }
 
                 withContext(Dispatchers.Main) {
                     onStep("正在下载…")
                 }
-                val dir = getApplication<Application>().getExternalFilesDir(null)
                 downloadAllMedia(
                     urls = urls.toList(),
-                    destDir = dir!!,
                     concurrency = 3,
                     scope = this,
-                    onEachProgress = { url, progress ->
-                        Log.d(">>>:Download", "Downloading $url: $progress")
+                    onEachProgress = { downloadUrl, progress ->
+                        Log.d(">>>:Download", "Downloading $downloadUrl: $progress")
                     },
                     onOverallProgress = { progress ->
                         viewModelScope.launch(Dispatchers.Main) {
@@ -116,6 +128,8 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
                         }
                     },
                     onAllComplete = { results ->
+                        exportToGallery(results)
+                        Log.d(">>>:download", "下载:${results.values}")
                         val success = results.values.all { it.file != null }
                         if (success) {
                             viewModelScope.launch(Dispatchers.Main) {
@@ -152,6 +166,20 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
                     onError("失败")
                 }
             }
+        }
+    }
+
+    private fun exportToGallery(results: Map<String, DownloadResult>) {
+        val savedPaths = results.values.mapNotNull { it.file?.absolutePath }
+        if (savedPaths.isEmpty()) return
+        val existingPaths = savedPaths.filter { path -> File(path).exists() }
+        if (existingPaths.isEmpty()) return
+        MediaScannerConnection.scanFile(
+            getApplication(),
+            existingPaths.toTypedArray(),
+            null
+        ) { path, uri ->
+            Log.d("HomeFragment", "exportToGallery: $path -> $uri")
         }
     }
 }

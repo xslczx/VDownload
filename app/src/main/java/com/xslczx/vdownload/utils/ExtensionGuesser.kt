@@ -83,7 +83,8 @@ object ExtensionGuesser {
         try {
             val path = URL(urlString).path
             val urlBase = File(path).name
-            val extFromUrl = File(path).extension.lowercase()
+            // Ensure we are extracting the extension correctly and that it's a valid extension
+            val extFromUrl = File(urlBase).extension.lowercase()
             if (extFromUrl.isNotBlank() && extFromUrl.length <= 10) {
                 candidates += ExtensionResult(
                     extension = extFromUrl,
@@ -93,6 +94,7 @@ object ExtensionGuesser {
                 )
             }
         } catch (_: Exception) {
+            // Handle URL parsing error, you can log or debug here
         }
 
         // 3. Content-Type
@@ -145,6 +147,7 @@ object ExtensionGuesser {
             originalCandidates = candidates.flatMap { it.originalCandidates }.distinct()
         )
     }
+
 
     private fun priority(src: ExtensionSource): Int = when (src) {
         ExtensionSource.CONTENT_DISPOSITION -> 0

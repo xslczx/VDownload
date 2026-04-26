@@ -42,7 +42,7 @@ class RecordFragment : Fragment(R.layout.layout_home_record) {
                         false
                     }
             }
-        }, onImageDownload = { path, isVideo ->
+        }, onImageDownload = { media ->
             if (ContextCompat.checkSelfPermission(
                     requireContext(),
                     Manifest.permission.WRITE_EXTERNAL_STORAGE
@@ -55,7 +55,7 @@ class RecordFragment : Fragment(R.layout.layout_home_record) {
                     333
                 )
             } else {
-                alertDownload(path)
+                alertDownload(media.path)
             }
         })
     }
