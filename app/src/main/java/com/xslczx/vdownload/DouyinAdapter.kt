@@ -14,6 +14,7 @@ import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.view.isVisible
 import androidx.recyclerview.widget.RecyclerView
 import com.blankj.utilcode.util.SizeUtils
 import com.blankj.utilcode.util.ToastUtils
@@ -29,8 +30,8 @@ class DouyinAdapter(
 ) : RecyclerView.Adapter<DouyinAdapter.ViewHolder>() {
 
     private companion object {
-        const val MEDIA_PREVIEW_SIZE_DP = 100f
-        const val MEDIA_PREVIEW_MARGIN_DP = 5f
+        const val MEDIA_PREVIEW_SIZE_DP = 76f
+        const val MEDIA_PREVIEW_MARGIN_DP = 8f
     }
 
     fun deleteItem(position: Int) {
@@ -66,6 +67,7 @@ class DouyinAdapter(
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
         val videoRecord = videos[position]
         holder.title.text = videoRecord.title
+        holder.tvTips.isVisible = position == 0
         holder.container.setOnClickListener {
             dispatchItemClick(holder, videoRecord, isLongClick = false)
         }
@@ -116,7 +118,16 @@ class DouyinAdapter(
                 marginEnd = SizeUtils.dp2px(MEDIA_PREVIEW_MARGIN_DP)
             }
         }
-        val previewImage = ImageView(context)
+        val previewImage = ImageView(context).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            scaleType = ImageView.ScaleType.CENTER_CROP
+            setBackgroundResource(R.drawable.bg_media_thumb)
+        }
+        previewContainer.setBackgroundResource(R.drawable.bg_media_thumb)
+        previewContainer.clipToOutline = true
         previewContainer.addView(previewImage)
         if (media.isVideo) {
             previewContainer.addView(

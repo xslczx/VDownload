@@ -1,6 +1,9 @@
 package com.xslczx.vdownload
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.View
@@ -19,6 +22,7 @@ import com.kongzue.dialogx.dialogs.TipDialog
 import com.kongzue.dialogx.dialogs.WaitDialog
 import com.xslczx.vdownload.databinding.LayoutHomeFragmentBinding
 import com.xslczx.vdownload.utils.ClipboardUtils
+import com.xslczx.vdownload.utils.StoragePermissionHelper
 import kotlinx.coroutines.launch
 
 class HomeFragment : Fragment(R.layout.layout_home_fragment) {
@@ -61,6 +65,7 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
 
     override fun onResume() {
         super.onResume()
+        updateClipboardHint()
         binding.etInput.doOnPreDraw { handleClipboardOnResume() }
     }
 
@@ -87,11 +92,15 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
 
     private fun setupInputArea() {
         updateInputUiState()
+        updateClipboardHint()
         binding.etInput.addTextChangedListener {
             updateInputUiState()
         }
         binding.clearBtn.setOnClickListener {
             binding.etInput.text?.clear()
+        }
+        binding.settingsButton.setOnClickListener {
+            startActivity(android.content.Intent(requireContext(), SettingsActivity::class.java))
         }
         binding.urlBtn.setOnClickListener {
             if (hasStoragePermission()) {
@@ -120,6 +129,9 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
         viewModel.refreshVideo(currentInputText())
 
         lifecycleScope.launch {
+            if (!StoragePermissionHelper.isAutoParseEnabled(requireContext())) {
+                return@launch
+            }
             val shouldProcessClipboard = viewModel.shouldProcessClipboardContent(clipboardText)
             if (!isAdded || !shouldProcessClipboard) {
                 return@launch
@@ -151,6 +163,7 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
                 onComplete = {
                     if (!isAdded) return@processClipboardContent
                     waitDialog.doDismiss()
+                    clearClipboard()
                     TipDialog.show(requireActivity(), COMPLETED_MESSAGE, WaitDialog.TYPE.SUCCESS, 500L)
                     viewModel.refreshVideo(currentInputText())
                 },
@@ -177,6 +190,7 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
     }
 
     private fun requestStoragePermission() {
+        StoragePermissionHelper.markRequested(requireContext())
         ActivityCompat.requestPermissions(
             requireActivity(),
             arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
@@ -190,5 +204,25 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
 
     private fun showErrorTip(message: String) {
         TipDialog.show(requireActivity(), message, WaitDialog.TYPE.ERROR, 500L)
+    }
+
+    private fun updateClipboardHint() {
+        val isAutoParseEnabled = StoragePermissionHelper.isAutoParseEnabled(requireContext())
+        binding.clipboardHintText.text = if (isAutoParseEnabled) {
+            "检测到剪贴板视频链接后会自动解析"
+        } else {
+            "检测到剪贴板视频链接后只会填充输入框，可在设置页面重新开启"
+        }
+        binding.recentTitle.text = if (isAutoParseEnabled) {
+            "最近解析"
+        } else {
+            "最近记录"
+        }
+    }
+
+    private fun clearClipboard() {
+        val clipboardManager = requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+            ?: return
+        clipboardManager.setPrimaryClip(ClipData.newPlainText("", ""))
     }
 }

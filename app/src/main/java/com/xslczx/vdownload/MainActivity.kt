@@ -2,22 +2,21 @@ package com.xslczx.vdownload
 
 import android.graphics.Color
 import android.os.Bundle
+import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.appcompat.app.AppCompatActivity
 import androidx.fragment.app.Fragment
 import com.blankj.utilcode.util.BarUtils
-import com.flyco.tablayout.listener.CustomTabEntity
-import com.flyco.tablayout.listener.OnTabSelectListener
 import com.xslczx.vdownload.databinding.LayoutMainActivityBinding
 
 class MainActivity : AppCompatActivity() {
     private companion object {
-        val TAB_TITLES = arrayOf("首页", "我的")
         val TAB_ICON_UNSELECTED = intArrayOf(R.drawable.ic_home, R.drawable.ic_mine)
         val TAB_ICON_SELECTED = intArrayOf(R.drawable.ic_home_s, R.drawable.ic_mine_s)
     }
 
     private val binding by lazy { LayoutMainActivityBinding.inflate(layoutInflater) }
-    private val tabEntities = ArrayList<CustomTabEntity>(TAB_TITLES.size)
     private val fragments = arrayListOf<Fragment>(HomeFragment(), RecordFragment())
 
     private var currentTabIndex = 0
@@ -41,22 +40,20 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun setupSystemBars() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        window.statusBarColor = Color.TRANSPARENT
+        window.navigationBarColor = Color.TRANSPARENT
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            isAppearanceLightStatusBars = true
+            isAppearanceLightNavigationBars = true
+        }
         BarUtils.transparentNavBar(this)
-        BarUtils.setStatusBarColor(this, Color.WHITE)
     }
 
     private fun setupTabs() {
-        repeat(TAB_TITLES.size) { index ->
-            tabEntities.add(TabEntity(TAB_TITLES[index], TAB_ICON_SELECTED[index], TAB_ICON_UNSELECTED[index]))
-        }
-        binding.tabLayout.setOnTabSelectListener(object : OnTabSelectListener {
-            override fun onTabSelect(position: Int) {
-                selectTab(position)
-            }
-
-            override fun onTabReselect(position: Int) = Unit
-        })
-        binding.tabLayout.setTabData(tabEntities)
+        binding.homeTab.setOnClickListener { selectTab(0) }
+        binding.mineTab.setOnClickListener { selectTab(1) }
+        updateTabSelection(0)
     }
 
     private fun selectTab(position: Int) {
@@ -82,9 +79,43 @@ class MainActivity : AppCompatActivity() {
         }.commitAllowingStateLoss()
 
         currentTabIndex = position
+        updateTabSelection(position)
+        notifyTabDisplayed(targetFragment)
     }
 
     private fun isValidTabPosition(position: Int): Boolean {
         return position in fragments.indices
+    }
+
+    private fun updateTabSelection(selectedTabIndex: Int) {
+        binding.homeTab.isSelected = selectedTabIndex == 0
+        binding.mineTab.isSelected = selectedTabIndex == 1
+
+        binding.homeTab.setBackgroundResource(
+            if (selectedTabIndex == 0) R.drawable.bg_tab_selected else android.R.color.transparent
+        )
+        binding.mineTab.setBackgroundResource(
+            if (selectedTabIndex == 1) R.drawable.bg_tab_selected else android.R.color.transparent
+        )
+
+        binding.homeTabIcon.setImageResource(
+            if (selectedTabIndex == 0) TAB_ICON_SELECTED[0] else TAB_ICON_UNSELECTED[0]
+        )
+        binding.mineTabIcon.setImageResource(
+            if (selectedTabIndex == 1) TAB_ICON_SELECTED[1] else TAB_ICON_UNSELECTED[1]
+        )
+
+        val selectedColor = ContextCompat.getColor(this, R.color.accentColor)
+        val unselectedColor = ContextCompat.getColor(this, R.color.secondaryTextColor)
+        binding.homeTabText.setTextColor(if (selectedTabIndex == 0) selectedColor else unselectedColor)
+        binding.mineTabText.setTextColor(if (selectedTabIndex == 1) selectedColor else unselectedColor)
+        binding.homeTabText.paint.isFakeBoldText = selectedTabIndex == 0
+        binding.mineTabText.paint.isFakeBoldText = selectedTabIndex == 1
+    }
+
+    private fun notifyTabDisplayed(fragment: Fragment) {
+        if (fragment is RecordFragment) {
+            fragment.refreshRecords()
+        }
     }
 }

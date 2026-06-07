@@ -7,5 +7,14 @@
     <color name="teal_700">#FF018786</color>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
-    <color name="accentColor">#d81e06</color>
+    <color name="accentColor">#D81E06</color>
+    <color name="pageBackground">#F7F7F8</color>
+    <color name="surfaceColor">#FFFFFF</color>
+    <color name="surfaceBorder">#ECECEC</color>
+    <color name="primaryTextColor">#171717</color>
+    <color name="secondaryTextColor">#6B7280</color>
+    <color name="disabledButtonColor">#9CA3AF</color>
+    <color name="accentTintColor">#1FD81E06</color>
+    <color name="accentSoftBackground">#FFF3F0</color>
+    <color name="tabBarBackground">#F2FFFFFF</color>
 </resources>

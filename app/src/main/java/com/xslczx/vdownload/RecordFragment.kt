@@ -22,6 +22,7 @@ import com.kongzue.dialogx.dialogs.WaitDialog
 import com.xslczx.vdownload.databinding.LayoutHomeRecordBinding
 import com.xslczx.vdownload.utils.MediaCategory
 import com.xslczx.vdownload.utils.MediaTypeDetector
+import com.xslczx.vdownload.utils.StoragePermissionHelper
 import com.xslczx.vdownload.utils.md5
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -46,7 +47,9 @@ class RecordFragment : Fragment(R.layout.layout_home_record) {
                     MessageDialog.show("温馨提示", "是否删除该条记录?", "确定", "取消")
                         .setOkButtonClickListener { _, _ ->
                             adapter.deleteItem(position)
-                            viewModel.deleteVideo(item)
+                            viewModel.deleteVideo(item) {
+                                refreshRecords()
+                            }
                             false
                         }
                 }
@@ -65,17 +68,22 @@ class RecordFragment : Fragment(R.layout.layout_home_record) {
         super.onViewCreated(view, savedInstanceState)
         binding.recyclerView.layoutManager = LinearLayoutManager(requireContext())
         binding.recyclerView.adapter = douyinAdapter
+        binding.settingsButton.setOnClickListener {
+            startActivity(android.content.Intent(requireContext(), SettingsActivity::class.java))
+        }
         viewModel.videosLiveData.observe(viewLifecycleOwner) { videos ->
-            binding.progressCircular.isVisible = false
+            binding.loadingRow.isVisible = false
             douyinAdapter.setNewData(videos)
+            updateToolbarSubtitle(videos.isEmpty())
+            updateRecordStats(videos)
+            toggleContentState(videos.isEmpty())
         }
         BarUtils.addMarginTopEqualStatusBarHeight(binding.toolbar)
     }
 
     override fun onResume() {
         super.onResume()
-        binding.progressCircular.isVisible = true
-        viewModel.refreshAllVideos()
+        refreshRecords()
     }
 
     private fun alertDownload(path: String) {
@@ -126,6 +134,7 @@ class RecordFragment : Fragment(R.layout.layout_home_record) {
     }
 
     private fun requestStoragePermission() {
+        StoragePermissionHelper.markRequested(requireContext())
         ActivityCompat.requestPermissions(
             requireActivity(),
             arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
@@ -159,4 +168,47 @@ class RecordFragment : Fragment(R.layout.layout_home_record) {
         val exportedFile: File,
         val directoryType: String
     )
+
+    private fun toggleContentState(isEmpty: Boolean) {
+        binding.contentState.isVisible = !isEmpty
+        binding.emptyState.isVisible = isEmpty
+    }
+
+    private fun updateToolbarSubtitle(isEmpty: Boolean) {
+        binding.toolbarSubtitle.text = if (isEmpty) {
+            "准备开始解析第一个链接"
+        } else {
+            "已保存的图片、视频与音频"
+        }
+    }
+
+    private fun updateRecordStats(videos: List<com.xslczx.vdownload.databse.DouyinVideo>) {
+        val mediaStats = videos
+            .flatMap { video ->
+                parseMediaPaths(video.savedImagePaths) + parseMediaPaths(video.savedVideoPath)
+            }
+            .mapNotNull { path ->
+                path.takeIf { it.isNotBlank() }?.let { MediaTypeDetector.detect(file = File(it)).category }
+            }
+
+        binding.videoCount.text = mediaStats.count { it == MediaCategory.VIDEO }.toString()
+        binding.imageCount.text = mediaStats.count { it == MediaCategory.IMAGE }.toString()
+        binding.audioCount.text = mediaStats.count { it == MediaCategory.AUDIO }.toString()
+    }
+
+    private fun parseMediaPaths(rawPaths: String?): List<String> {
+        return rawPaths
+            ?.split(",")
+            ?.map(String::trim)
+            ?.filter(String::isNotEmpty)
+            .orEmpty()
+    }
+
+    fun refreshRecords() {
+        if (!isAdded) {
+            return
+        }
+        binding.loadingRow.isVisible = true
+        viewModel.refreshAllVideos()
+    }
 }
