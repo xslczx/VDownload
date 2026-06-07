@@ -1,18 +1,14 @@
 package com.xslczx.vdownload
 
-import android.Manifest
 import android.app.Application
-import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
-import android.os.Environment
 import android.util.Log
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
-import com.blankj.utilcode.util.FileUtils
 import com.xslczx.vdownload.databse.AppDatabase
 import com.xslczx.vdownload.databse.DouyinVideo
+import com.xslczx.vdownload.databse.DouyinVideoData
 import com.xslczx.vdownload.utils.DownloadResult
 import com.xslczx.vdownload.utils.MediaCategory
 import com.xslczx.vdownload.utils.downloadAllMedia
@@ -24,30 +20,40 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 class DouyinViewModel(application: Application) : AndroidViewModel(application) {
-    private val db = AppDatabase.getInstance(application)
+
+    private companion object {
+        const val VIDEO_INFO_APP_KEY = "7e8c673248ef697b9697a563cf288ae1"
+        const val STEP_EXTRACTING_URL = "正在提取链接…"
+        const val STEP_PARSING_URL = "正在解析链接…"
+        const val STEP_DOWNLOADING = "正在下载…"
+        const val STEP_DOWNLOAD_COMPLETED = "下载完成"
+        const val STEP_SAVING_RECORD = "正在保存记录…"
+        const val ERROR_INVALID_URL = "链接无效"
+        const val ERROR_PARSE_FAILED = "解析失败"
+        const val ERROR_DOWNLOAD_FAILED = "下载失败"
+        const val ERROR_UNKNOWN = "失败"
+    }
+
+    private val database = AppDatabase.getInstance(application)
     val videosLiveData = MutableLiveData<List<DouyinVideo>>()
 
     fun refreshVideo(text: String) {
         viewModelScope.launch {
-            val url = extractUrlFromClipboard(text)
-            if (url.isNullOrEmpty()) {
-                return@launch
-            }
-            val lastByUrl = db.videoDao().getLastByUrl(url)
-            val list = if (lastByUrl == null) emptyList() else arrayListOf(lastByUrl)
-            videosLiveData.postValue(list)
+            val normalizedUrl = normalizeUrl(text) ?: return@launch
+            val savedVideo = database.videoDao().getLastByUrl(normalizedUrl)
+            videosLiveData.postValue(savedVideo?.let(::listOf).orEmpty())
         }
     }
 
     fun refreshAllVideos() {
         viewModelScope.launch {
-            videosLiveData.postValue(db.videoDao().getAll())
+            videosLiveData.postValue(database.videoDao().getAll())
         }
     }
 
     fun deleteVideo(video: DouyinVideo, onComplete: (() -> Unit)? = null) {
         viewModelScope.launch(Dispatchers.IO) {
-            db.videoDao().delete(video.id)
+            database.videoDao().delete(video.id)
             withContext(Dispatchers.Main) {
                 onComplete?.invoke()
             }
@@ -55,10 +61,8 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     suspend fun shouldProcessClipboardContent(text: String): Boolean {
-        val url = extractUrlFromClipboard(text)
-        if (url.isNullOrEmpty()) return false
-        val lastByUrl = db.videoDao().getLastByUrl(url)
-        return lastByUrl==null
+        val normalizedUrl = normalizeUrl(text) ?: return false
+        return database.videoDao().getLastByUrl(normalizedUrl) == null
     }
 
     fun processClipboardContent(
@@ -69,54 +73,36 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                withContext(Dispatchers.Main) {
-                    onStep("正在提取链接…")
-                }
-                val url = extractUrlFromClipboard(text)
-                if (url.isNullOrEmpty()) {
-                    withContext(Dispatchers.Main) {
-                        onError("链接无效")
-                    }
+                dispatchStep(onStep, STEP_EXTRACTING_URL)
+                val normalizedUrl = normalizeUrl(text)
+                if (normalizedUrl.isNullOrEmpty()) {
+                    dispatchStep(onError, ERROR_INVALID_URL)
                     return@launch
                 }
-                val lastByUrl = db.videoDao().getLastByUrl(url)
-                if (lastByUrl != null) {
+
+                if (database.videoDao().getLastByUrl(normalizedUrl) != null) {
                     withContext(Dispatchers.Main) {
                         onComplete()
                     }
                     return@launch
                 }
-                withContext(Dispatchers.Main) {
-                    onStep("正在解析链接…")
-                }
-                val apiResponse = fetchVideoInfo(url, "7e8c673248ef697b9697a563cf288ae1") //这appKey还是随便写一个吧
-                val data = apiResponse?.data
-                if (data == null) {
-                    withContext(Dispatchers.Main) {
-                        onError("解析失败")
-                    }
+
+                dispatchStep(onStep, STEP_PARSING_URL)
+                val responseData = fetchVideoInfo(normalizedUrl, VIDEO_INFO_APP_KEY)?.data
+                if (responseData == null) {
+                    dispatchStep(onError, ERROR_PARSE_FAILED)
                     return@launch
                 }
 
-                val urls = mutableSetOf<Media>()
-
-                if (!data.video.isNullOrEmpty()) {
-                    data.video.let { urls.add(Media(it,true)) }
-                } else if (!data.image.isNullOrEmpty()) {
-                    data.image.let { urls.add(Media(it,false)) }
+                val mediaList = collectMedia(responseData)
+                if (mediaList.isEmpty()) {
+                    dispatchStep(onError, ERROR_DOWNLOAD_FAILED)
+                    return@launch
                 }
 
-                if (urls.isEmpty()) {
-                    data.atlas?.forEach {
-                        urls.add(Media(it,false))
-                    }
-                }
-
-                withContext(Dispatchers.Main) {
-                    onStep("正在下载…")
-                }
+                dispatchStep(onStep, STEP_DOWNLOADING)
                 downloadAllMedia(
-                    urls = urls.toList(),
+                    urls = mediaList,
                     concurrency = 3,
                     scope = this,
                     onEachProgress = { downloadUrl, progress ->
@@ -128,52 +114,102 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
                         }
                     },
                     onAllComplete = { results ->
-                        exportToGallery(results)
-                        Log.d(">>>:download", "下载:${results.values}")
-                        val success = results.values.all { it.file != null }
-                        if (success) {
-                            viewModelScope.launch(Dispatchers.Main) {
-                                onStep("下载完成")
-                            }
-                            Log.d(">>>:download", "下载完成:$results")
-                            val videoPaths = results.filter { it.value.media== MediaCategory.VIDEO }.mapNotNull { it.value.file?.absolutePath }
-                            val imagePaths = results.filter { it.value.media== MediaCategory.IMAGE }.mapNotNull { it.value.file?.absolutePath }
-                            viewModelScope.launch(Dispatchers.Main) {
-                                onStep("正在保存记录…")
-                            }
-                            viewModelScope.launch(Dispatchers.IO) {
-                                val record = DouyinVideo(
-                                    url = url,
-                                    title = data.title,
-                                    savedImagePaths = imagePaths.joinToString(","),
-                                    savedVideoPath = videoPaths.joinToString(",")
-                                )
-                                db.videoDao().insert(record)
-                                viewModelScope.launch(Dispatchers.Main) {
-                                    onComplete()
-                                }
-                            }
-                        } else {
-                            viewModelScope.launch(Dispatchers.Main) {
-                                onError("下载失败")
-                            }
-                        }
+                        handleDownloadResults(
+                            normalizedUrl = normalizedUrl,
+                            title = responseData.title,
+                            results = results,
+                            onStep = onStep,
+                            onComplete = onComplete,
+                            onError = onError
+                        )
                     }
                 )
-            } catch (e: Exception) {
-                Log.e(">>>","error",e)
-                withContext(Dispatchers.Main) {
-                    onError("失败")
-                }
+            } catch (exception: Exception) {
+                Log.e(">>>", "error", exception)
+                dispatchStep(onError, ERROR_UNKNOWN)
             }
         }
+    }
+
+    private fun normalizeUrl(text: String): String? {
+        return extractUrlFromClipboard(text)?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    private suspend fun dispatchStep(callback: (String) -> Unit, message: String) {
+        withContext(Dispatchers.Main) {
+            callback(message)
+        }
+    }
+
+    private fun collectMedia(responseData: DouyinVideoData): List<Media> {
+        return buildSet {
+            responseData.video?.takeIf { it.isNotBlank() }?.let { add(Media(it, true)) }
+            if (responseData.video.isNullOrEmpty()) {
+                responseData.image?.takeIf { it.isNotBlank() }?.let { add(Media(it, false)) }
+            }
+            if (isEmpty()) {
+                responseData.atlas.orEmpty()
+                    .filter { atlasUrl -> atlasUrl.isNotBlank() }
+                    .forEach { atlasUrl -> add(Media(atlasUrl, false)) }
+            }
+        }.toList()
+    }
+
+    private fun handleDownloadResults(
+        normalizedUrl: String,
+        title: String?,
+        results: Map<String, DownloadResult>,
+        onStep: (String) -> Unit,
+        onComplete: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        exportToGallery(results)
+        Log.d(">>>:download", "下载:${results.values}")
+
+        if (results.isEmpty() || results.values.any { it.file == null }) {
+            viewModelScope.launch(Dispatchers.Main) {
+                onError(ERROR_DOWNLOAD_FAILED)
+            }
+            return
+        }
+
+        val savedVideoPaths = extractSavedPaths(results, MediaCategory.VIDEO)
+        val savedImagePaths = extractSavedPaths(results, MediaCategory.IMAGE)
+        viewModelScope.launch(Dispatchers.Main) {
+            onStep(STEP_DOWNLOAD_COMPLETED)
+            onStep(STEP_SAVING_RECORD)
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            database.videoDao().insert(
+                DouyinVideo(
+                    url = normalizedUrl,
+                    title = title,
+                    savedImagePaths = savedImagePaths.joinToString(","),
+                    savedVideoPath = savedVideoPaths.joinToString(",")
+                )
+            )
+            withContext(Dispatchers.Main) {
+                onComplete()
+            }
+        }
+    }
+
+    private fun extractSavedPaths(
+        results: Map<String, DownloadResult>,
+        mediaCategory: MediaCategory
+    ): List<String> {
+        return results.values
+            .filter { it.media == mediaCategory }
+            .mapNotNull { it.file?.absolutePath }
     }
 
     private fun exportToGallery(results: Map<String, DownloadResult>) {
         val savedPaths = results.values.mapNotNull { it.file?.absolutePath }
         if (savedPaths.isEmpty()) return
+
         val existingPaths = savedPaths.filter { path -> File(path).exists() }
         if (existingPaths.isEmpty()) return
+
         MediaScannerConnection.scanFile(
             getApplication(),
             existingPaths.toTypedArray(),

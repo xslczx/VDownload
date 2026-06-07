@@ -30,84 +30,44 @@ import java.io.File
 
 class RecordFragment : Fragment(R.layout.layout_home_record) {
 
+    private companion object {
+        const val STORAGE_PERMISSION_REQUEST_CODE = 333
+        const val EXPORT_START_MESSAGE = "开始下载"
+        const val EXPORT_FAILED_MESSAGE = "导出失败"
+    }
+
     private val binding by lazy { LayoutHomeRecordBinding.bind(requireView()) }
     private val viewModel by lazy { ViewModelProvider(this)[DouyinViewModel::class.java] }
     private val douyinAdapter by lazy {
-        DouyinAdapter(mutableListOf(), onItemClick = { adapter, position, item, isLongClicked ->
-            if (isLongClicked) {
-                MessageDialog.show("温馨提示", "是否删除该条记录?", "确定", "取消")
-                    .setOkButtonClickListener { dialog, v ->
-                        adapter.deleteItem(position)
-                        viewModel.deleteVideo(item)
-                        false
-                    }
-            }
-        }, onImageDownload = { media ->
-            if (ContextCompat.checkSelfPermission(
-                    requireContext(),
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE
-                )
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                ActivityCompat.requestPermissions(
-                    requireActivity(),
-                    arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
-                    333
-                )
-            } else {
+        DouyinAdapter(
+            mutableListOf(),
+            onItemClick = { adapter, position, item, isLongClicked ->
+                if (isLongClicked) {
+                    MessageDialog.show("温馨提示", "是否删除该条记录?", "确定", "取消")
+                        .setOkButtonClickListener { _, _ ->
+                            adapter.deleteItem(position)
+                            viewModel.deleteVideo(item)
+                            false
+                        }
+                }
+            },
+            onImageDownload = { media ->
+                if (!hasStoragePermission()) {
+                    requestStoragePermission()
+                    return@DouyinAdapter
+                }
                 alertDownload(media.path)
             }
-        })
-    }
-
-    private fun alertDownload(path: String) {
-        MessageDialog.show("温馨提示", "是否需要导出到手机相册？", "导出", "取消")
-            .setOkButtonClickListener { dialog, v ->
-                lifecycleScope.launch {
-                    val original = File(path)
-                    val detectedMedia = MediaTypeDetector.detect(file = original)
-                    val waitDialog = WaitDialog.show(requireActivity(), "开始下载")
-                    val type = when (detectedMedia.category) {
-                        MediaCategory.AUDIO -> Environment.DIRECTORY_MUSIC
-                        MediaCategory.VIDEO -> Environment.DIRECTORY_MOVIES
-                        MediaCategory.IMAGE -> Environment.DIRECTORY_PICTURES
-                        else -> Environment.DIRECTORY_DOWNLOADS
-                    }
-                    val file = Environment.getExternalStoragePublicDirectory(type)
-                    if (!file.exists()) {
-                        file.mkdirs()
-                    }
-                    val export = File(file, original.name.md5() + ".${original.extension}")
-                    withContext(Dispatchers.IO) {
-                        FileUtils.copy(original, export)
-                    }
-                    Log.d(">>>:Export", "Exported $original to $export")
-                    waitDialog.doDismiss()
-                    TipDialog.show(
-                        requireActivity(),
-                        "已导出到 $type 目录",
-                        WaitDialog.TYPE.SUCCESS
-                    )
-                    withContext(Dispatchers.Main) {
-                        MediaScannerConnection.scanFile(
-                            requireContext(),
-                            arrayOf(export.absolutePath),
-                            null,
-                            null
-                        )
-                    }
-                }
-                false
-            }
+        )
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         binding.recyclerView.layoutManager = LinearLayoutManager(requireContext())
         binding.recyclerView.adapter = douyinAdapter
-        viewModel.videosLiveData.observe(viewLifecycleOwner) {
+        viewModel.videosLiveData.observe(viewLifecycleOwner) { videos ->
             binding.progressCircular.isVisible = false
-            douyinAdapter.setNewData(it)
+            douyinAdapter.setNewData(videos)
         }
         BarUtils.addMarginTopEqualStatusBarHeight(binding.toolbar)
     }
@@ -117,4 +77,86 @@ class RecordFragment : Fragment(R.layout.layout_home_record) {
         binding.progressCircular.isVisible = true
         viewModel.refreshAllVideos()
     }
+
+    private fun alertDownload(path: String) {
+        MessageDialog.show("温馨提示", "是否需要导出到手机相册？", "导出", "取消")
+            .setOkButtonClickListener { _, _ ->
+                lifecycleScope.launch {
+                    if (!isAdded) {
+                        return@launch
+                    }
+
+                    val sourceFile = File(path)
+                    if (!sourceFile.exists() || !sourceFile.isFile) {
+                        TipDialog.show(requireActivity(), EXPORT_FAILED_MESSAGE, WaitDialog.TYPE.ERROR)
+                        return@launch
+                    }
+
+                    val waitDialog = WaitDialog.show(requireActivity(), EXPORT_START_MESSAGE)
+                    runCatching {
+                        exportMediaToPublicDirectory(sourceFile)
+                    }.onSuccess { exportResult ->
+                        waitDialog.doDismiss()
+                        TipDialog.show(
+                            requireActivity(),
+                            "已导出到 ${exportResult.directoryType} 目录",
+                            WaitDialog.TYPE.SUCCESS
+                        )
+                        MediaScannerConnection.scanFile(
+                            requireContext(),
+                            arrayOf(exportResult.exportedFile.absolutePath),
+                            null,
+                            null
+                        )
+                    }.onFailure { throwable ->
+                        Log.e("RecordFragment", "Failed to export media: $path", throwable)
+                        waitDialog.doDismiss()
+                        TipDialog.show(requireActivity(), EXPORT_FAILED_MESSAGE, WaitDialog.TYPE.ERROR)
+                    }
+                }
+                false
+            }
+    }
+
+    private fun hasStoragePermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            requireContext(),
+            Manifest.permission.WRITE_EXTERNAL_STORAGE
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun requestStoragePermission() {
+        ActivityCompat.requestPermissions(
+            requireActivity(),
+            arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
+            STORAGE_PERMISSION_REQUEST_CODE
+        )
+    }
+
+    private suspend fun exportMediaToPublicDirectory(sourceFile: File): ExportResult {
+        val detectedMedia = MediaTypeDetector.detect(file = sourceFile)
+        val directoryType = when (detectedMedia.category) {
+            MediaCategory.AUDIO -> Environment.DIRECTORY_MUSIC
+            MediaCategory.VIDEO -> Environment.DIRECTORY_MOVIES
+            MediaCategory.IMAGE -> Environment.DIRECTORY_PICTURES
+            else -> Environment.DIRECTORY_DOWNLOADS
+        }
+        val targetDirectory = Environment.getExternalStoragePublicDirectory(directoryType)
+        if (!targetDirectory.exists() && !targetDirectory.mkdirs()) {
+            error("Unable to create directory: ${targetDirectory.absolutePath}")
+        }
+
+        val extensionSuffix = sourceFile.extension.takeIf { it.isNotBlank() }?.let { ".$it" }.orEmpty()
+        val exportFile = File(targetDirectory, sourceFile.name.md5() + extensionSuffix)
+        withContext(Dispatchers.IO) {
+            FileUtils.copy(sourceFile, exportFile)
+        }
+        Log.d(">>>:Export", "Exported $sourceFile to $exportFile")
+        return ExportResult(exportFile, directoryType)
+    }
+
+    private data class ExportResult(
+        val exportedFile: File,
+        val directoryType: String
+    )
 }

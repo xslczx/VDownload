@@ -1,6 +1,7 @@
 package com.xslczx.vdownload
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.util.Log
@@ -22,21 +23,30 @@ import com.xslczx.vdownload.databse.DouyinVideo
 import java.io.File
 
 class DouyinAdapter(
-    private val list: MutableList<DouyinVideo>,
+    private val videos: MutableList<DouyinVideo>,
     private val onItemClick: ((DouyinAdapter, Int, DouyinVideo, Boolean) -> Unit)? = null,
     private val onImageDownload: ((Media) -> Unit)? = null,
 ) : RecyclerView.Adapter<DouyinAdapter.ViewHolder>() {
 
+    private companion object {
+        const val MEDIA_PREVIEW_SIZE_DP = 100f
+        const val MEDIA_PREVIEW_MARGIN_DP = 5f
+    }
+
     fun deleteItem(position: Int) {
-        list.removeAt(position)
+        if (position !in videos.indices) {
+            return
+        }
+
+        videos.removeAt(position)
         notifyItemRemoved(position)
-        notifyItemRangeChanged(position, list.size)
+        notifyItemRangeChanged(position, videos.size)
     }
 
     @SuppressLint("NotifyDataSetChanged")
     fun setNewData(data: List<DouyinVideo>) {
-        list.clear()
-        list.addAll(data)
+        videos.clear()
+        videos.addAll(data)
         notifyDataSetChanged()
     }
 
@@ -49,71 +59,115 @@ class DouyinAdapter(
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
-        val view = LayoutInflater.from(parent.context).inflate(R.layout.item_douyin, parent, false)
-        return ViewHolder(view)
+        val itemView = LayoutInflater.from(parent.context).inflate(R.layout.item_douyin, parent, false)
+        return ViewHolder(itemView)
     }
 
     override fun onBindViewHolder(holder: ViewHolder, position: Int) {
-        val item = list[position]
-        //holder.tvTips.isVisible = position==0
-        holder.title.text = item.title
+        val videoRecord = videos[position]
+        holder.title.text = videoRecord.title
         holder.container.setOnClickListener {
-            onItemClick?.invoke(this, holder.layoutPosition, item, false)
+            dispatchItemClick(holder, videoRecord, isLongClick = false)
         }
         holder.container.setOnLongClickListener {
-            onItemClick?.invoke(this, holder.layoutPosition, item, true)
-            return@setOnLongClickListener true
+            dispatchItemClick(holder, videoRecord, isLongClick = true)
+            true
         }
-        holder.imageContainer.removeAllViews()
-        val h = SizeUtils.dp2px(100f)
-        val imagePaths = item.savedImagePaths?.split(",") ?: emptyList()
-        val videoPaths = item.savedVideoPath?.split(",") ?: emptyList()
-        val list = mutableListOf<Media>()
-        imagePaths.forEach { s -> list.add(Media(s,false)) }
-        videoPaths.forEach { s -> list.add(Media(s,true)) }
-        Log.d(">>>","$position ==>$list")
-        list.forEach { media ->
-            if (media.path.isEmpty()) return@forEach
-            val frameLayout = FrameLayout(holder.itemView.context)
-            frameLayout.layoutParams =
-                ViewGroup.MarginLayoutParams(h, h).apply { marginEnd = SizeUtils.dp2px(5f) }
-            val imageCover = ImageView(holder.itemView.context)
 
-            frameLayout.addView(imageCover)
-            if (media.isVideo) {
-                val imagePlay = ImageView(holder.itemView.context)
-                imagePlay.setImageResource(R.drawable.baseline_play_circle_outline_24)
-                imagePlay.setColorFilter(Color.WHITE)
-                frameLayout.addView(
-                    imagePlay,
-                    FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        Gravity.CENTER
-                    )
-                )
-            }
-            Glide.with(imageCover).load(media.path).into(imageCover)
-            holder.imageContainer.addView(frameLayout)
-            frameLayout.setOnClickListener {
-                val file = File(media.path)
-                val uri = UriUtils.file2Uri(file)
-                if (uri == null) {
-                    ToastUtils.showLong("文件不存在")
-                    return@setOnClickListener
-                }
-                val intent = Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(uri, if (media.isVideo)"video/*" else "image/*")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                }
-                holder.itemView.context.startActivity(intent)
-            }
-            frameLayout.setOnLongClickListener {
-                onImageDownload?.invoke(media)
-                return@setOnLongClickListener true
-            }
+        holder.imageContainer.removeAllViews()
+        val mediaList = buildMediaList(videoRecord)
+        Log.d(">>>", "$position ==> $mediaList")
+        mediaList.forEach { media ->
+            holder.imageContainer.addView(createMediaPreview(holder, media))
         }
     }
 
-    override fun getItemCount(): Int = list.size
+    override fun getItemCount(): Int = videos.size
+
+    private fun dispatchItemClick(holder: ViewHolder, videoRecord: DouyinVideo, isLongClick: Boolean) {
+        val adapterPosition = holder.bindingAdapterPosition
+        if (adapterPosition == RecyclerView.NO_POSITION) {
+            return
+        }
+        onItemClick?.invoke(this, adapterPosition, videoRecord, isLongClick)
+    }
+
+    private fun buildMediaList(videoRecord: DouyinVideo): List<Media> {
+        return buildList {
+            addAll(parseMediaPaths(videoRecord.savedImagePaths, isVideo = false))
+            addAll(parseMediaPaths(videoRecord.savedVideoPath, isVideo = true))
+        }
+    }
+
+    private fun parseMediaPaths(rawPaths: String?, isVideo: Boolean): List<Media> {
+        return rawPaths
+            ?.split(",")
+            ?.map(String::trim)
+            ?.filter(String::isNotEmpty)
+            ?.map { Media(it, isVideo) }
+            .orEmpty()
+    }
+
+    private fun createMediaPreview(holder: ViewHolder, media: Media): View {
+        val context = holder.itemView.context
+        val previewSize = SizeUtils.dp2px(MEDIA_PREVIEW_SIZE_DP)
+        val previewContainer = FrameLayout(context).apply {
+            layoutParams = ViewGroup.MarginLayoutParams(previewSize, previewSize).apply {
+                marginEnd = SizeUtils.dp2px(MEDIA_PREVIEW_MARGIN_DP)
+            }
+        }
+        val previewImage = ImageView(context)
+        previewContainer.addView(previewImage)
+        if (media.isVideo) {
+            previewContainer.addView(
+                createVideoIndicator(context),
+                FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.CENTER
+                )
+            )
+        }
+        Glide.with(previewImage).load(media.path).into(previewImage)
+        previewContainer.setOnClickListener {
+            openMedia(holder, media)
+        }
+        previewContainer.setOnLongClickListener {
+            onImageDownload?.invoke(media)
+            true
+        }
+        return previewContainer
+    }
+
+    private fun createVideoIndicator(context: Context): ImageView {
+        return ImageView(context).apply {
+            setImageResource(R.drawable.baseline_play_circle_outline_24)
+            setColorFilter(Color.WHITE)
+        }
+    }
+
+    private fun openMedia(holder: ViewHolder, media: Media) {
+        val mediaFile = File(media.path)
+        if (!mediaFile.exists() || !mediaFile.isFile) {
+            ToastUtils.showLong("文件不存在")
+            return
+        }
+
+        val mediaUri = UriUtils.file2Uri(mediaFile)
+        if (mediaUri == null) {
+            ToastUtils.showLong("文件不存在")
+            return
+        }
+
+        val context = holder.itemView.context
+        val openMediaIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(mediaUri, if (media.isVideo) "video/*" else "image/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        if (openMediaIntent.resolveActivity(context.packageManager) == null) {
+            ToastUtils.showLong("未找到可打开该文件的应用")
+            return
+        }
+        context.startActivity(openMediaIntent)
+    }
 }
