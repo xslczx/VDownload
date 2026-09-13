@@ -54,6 +54,12 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
 
     private var confirmationDialog: MessageDialog? = null
 
+    /**
+     * 已经交给解析流程的链接。onResume 会被权限弹窗关闭、切后台回来、从设置页返回等
+     * 反复触发，靠它保证同一段剪贴板内容只自动解析一次。
+     */
+    private var lastAutoHandledUrl: String? = null
+
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         setupRecyclerView()
@@ -123,13 +129,18 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
             return
         }
 
-        if (!ClipboardUtils.extractCleanUrl(clipboardText).isNullOrBlank()) {
+        val clipboardUrl = ClipboardUtils.extractCleanUrl(clipboardText)
+        if (!clipboardUrl.isNullOrBlank()) {
             binding.etInput.setText(clipboardText)
         }
         viewModel.refreshVideo(currentInputText())
 
         lifecycleScope.launch {
             if (!StoragePermissionHelper.isAutoParseEnabled(requireContext())) {
+                return@launch
+            }
+            // 同一个链接只自动解析一次，否则每次 onResume 都会重新跑一遍下载
+            if (clipboardUrl.isNullOrBlank() || clipboardUrl == lastAutoHandledUrl) {
                 return@launch
             }
             val shouldProcessClipboard = viewModel.shouldProcessClipboardContent(clipboardText)
@@ -153,7 +164,7 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
 
         lifecycleScope.launch {
             val waitDialog = WaitDialog.show(requireActivity(), INITIAL_STEP_MESSAGE)
-            viewModel.processClipboardContent(
+            val accepted = viewModel.processClipboardContent(
                 inputText,
                 onStep = { stepMessage ->
                     if (isAdded) {
@@ -163,7 +174,6 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
                 onComplete = {
                     if (!isAdded) return@processClipboardContent
                     waitDialog.doDismiss()
-                    clearClipboard()
                     TipDialog.show(requireActivity(), COMPLETED_MESSAGE, WaitDialog.TYPE.SUCCESS, 500L)
                     viewModel.refreshVideo(currentInputText())
                 },
@@ -173,6 +183,17 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
                     showErrorTip(errorMessage)
                 }
             )
+
+            if (!accepted) {
+                // 链接正在处理中（或无效），这次触发直接丢弃
+                waitDialog.doDismiss()
+                return@launch
+            }
+
+            // 受理后就把链接记下来并清空剪贴板：下载要花几秒到几十秒，
+            // 期间任何一次 onResume 都不该再拿着同一段剪贴板内容重新触发一遍。
+            lastAutoHandledUrl = ClipboardUtils.extractCleanUrl(inputText)
+            clearClipboard()
         }
     }
 

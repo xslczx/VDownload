@@ -18,6 +18,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 
 class DouyinViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -36,6 +37,15 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
 
     private val database = AppDatabase.getInstance(application)
     val videosLiveData = MutableLiveData<List<DouyinVideo>>()
+
+    /**
+     * 正在处理的链接。
+     *
+     * 记录要等下载全部结束才写库，所以仅靠数据库去重挡不住下载期间的重复触发
+     * （权限弹窗关闭、切后台回来、从设置页返回都会让页面重新 onResume）。
+     * 这里在流程开始时就占位，直到记录入库后才释放，保证同一链接不会被重复下载。
+     */
+    private val processingUrls = ConcurrentHashMap.newKeySet<String>()
 
     fun refreshVideo(text: String) {
         viewModelScope.launch {
@@ -65,70 +75,93 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
         return database.videoDao().getLastByUrl(normalizedUrl) == null
     }
 
+    /**
+     * 解析并下载剪贴板链接。
+     *
+     * @return true 表示请求已被受理；false 表示链接无效，或该链接正在处理中而被忽略。
+     *         返回 false 时不会回调任何 onStep/onComplete/onError。
+     */
     fun processClipboardContent(
         text: String,
         onStep: (String) -> Unit,
         onComplete: () -> Unit,
         onError: (String) -> Unit
-    ) {
+    ): Boolean {
+        val normalizedUrl = normalizeUrl(text)
+        if (normalizedUrl.isNullOrEmpty()) {
+            viewModelScope.launch(Dispatchers.Main) { onError(ERROR_INVALID_URL) }
+            return false
+        }
+
+        if (!processingUrls.add(normalizedUrl)) {
+            Log.d(">>>:Download", "该链接正在处理中，忽略重复请求: $normalizedUrl")
+            return false
+        }
+
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                dispatchStep(onStep, STEP_EXTRACTING_URL)
-                val normalizedUrl = normalizeUrl(text)
-                if (normalizedUrl.isNullOrEmpty()) {
-                    dispatchStep(onError, ERROR_INVALID_URL)
-                    return@launch
-                }
-
-                if (database.videoDao().getLastByUrl(normalizedUrl) != null) {
-                    withContext(Dispatchers.Main) {
-                        onComplete()
-                    }
-                    return@launch
-                }
-
-                dispatchStep(onStep, STEP_PARSING_URL)
-                val responseData = fetchVideoInfo(normalizedUrl, VIDEO_INFO_APP_KEY)?.data
-                if (responseData == null) {
-                    dispatchStep(onError, ERROR_PARSE_FAILED)
-                    return@launch
-                }
-
-                val mediaList = collectMedia(responseData)
-                if (mediaList.isEmpty()) {
-                    dispatchStep(onError, ERROR_DOWNLOAD_FAILED)
-                    return@launch
-                }
-
-                dispatchStep(onStep, STEP_DOWNLOADING)
-                downloadAllMedia(
-                    urls = mediaList,
-                    concurrency = 3,
-                    scope = this,
-                    onEachProgress = { downloadUrl, progress ->
-                        Log.d(">>>:Download", "Downloading $downloadUrl: $progress")
-                    },
-                    onOverallProgress = { progress ->
-                        viewModelScope.launch(Dispatchers.Main) {
-                            onStep("正在下载 $progress%")
-                        }
-                    },
-                    onAllComplete = { results ->
-                        handleDownloadResults(
-                            normalizedUrl = normalizedUrl,
-                            title = responseData.title,
-                            results = results,
-                            onStep = onStep,
-                            onComplete = onComplete,
-                            onError = onError
-                        )
-                    }
-                )
+                runDownloadFlow(normalizedUrl, onStep, onComplete, onError)
             } catch (exception: Exception) {
                 Log.e(">>>", "error", exception)
                 dispatchStep(onError, ERROR_UNKNOWN)
+            } finally {
+                // 必须等入库结束再释放占位，否则空档期内仍会被重复触发
+                processingUrls.remove(normalizedUrl)
             }
         }
+        return true
+    }
+
+    private suspend fun runDownloadFlow(
+        normalizedUrl: String,
+        onStep: (String) -> Unit,
+        onComplete: () -> Unit,
+        onError: (String) -> Unit
+    ) {
+        dispatchStep(onStep, STEP_EXTRACTING_URL)
+
+        if (database.videoDao().getLastByUrl(normalizedUrl) != null) {
+            withContext(Dispatchers.Main) {
+                onComplete()
+            }
+            return
+        }
+
+        dispatchStep(onStep, STEP_PARSING_URL)
+        val responseData = fetchVideoInfo(normalizedUrl, VIDEO_INFO_APP_KEY)?.data
+        if (responseData == null) {
+            dispatchStep(onError, ERROR_PARSE_FAILED)
+            return
+        }
+
+        val mediaList = collectMedia(responseData)
+        if (mediaList.isEmpty()) {
+            dispatchStep(onError, ERROR_DOWNLOAD_FAILED)
+            return
+        }
+
+        dispatchStep(onStep, STEP_DOWNLOADING)
+        val results = downloadAllMedia(
+            urls = mediaList,
+            concurrency = 3,
+            onEachProgress = { downloadUrl, progress ->
+                Log.d(">>>:Download", "Downloading $downloadUrl: $progress")
+            },
+            onOverallProgress = { progress ->
+                viewModelScope.launch(Dispatchers.Main) {
+                    onStep("正在下载 $progress%")
+                }
+            }
+        )
+
+        handleDownloadResults(
+            normalizedUrl = normalizedUrl,
+            title = responseData.title,
+            results = results,
+            onStep = onStep,
+            onComplete = onComplete,
+            onError = onError
+        )
     }
 
     private fun normalizeUrl(text: String): String? {
@@ -155,7 +188,7 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
         }.toList()
     }
 
-    private fun handleDownloadResults(
+    private suspend fun handleDownloadResults(
         normalizedUrl: String,
         title: String?,
         results: Map<String, DownloadResult>,
@@ -167,30 +200,26 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
         Log.d(">>>:download", "下载:${results.values}")
 
         if (results.isEmpty() || results.values.any { it.file == null }) {
-            viewModelScope.launch(Dispatchers.Main) {
-                onError(ERROR_DOWNLOAD_FAILED)
-            }
+            dispatchStep(onError, ERROR_DOWNLOAD_FAILED)
             return
         }
 
         val savedVideoPaths = extractSavedPaths(results, MediaCategory.VIDEO)
         val savedImagePaths = extractSavedPaths(results, MediaCategory.IMAGE)
-        viewModelScope.launch(Dispatchers.Main) {
-            onStep(STEP_DOWNLOAD_COMPLETED)
-            onStep(STEP_SAVING_RECORD)
-        }
-        viewModelScope.launch(Dispatchers.IO) {
-            database.videoDao().insert(
-                DouyinVideo(
-                    url = normalizedUrl,
-                    title = title,
-                    savedImagePaths = savedImagePaths.joinToString(","),
-                    savedVideoPath = savedVideoPaths.joinToString(",")
-                )
+        dispatchStep(onStep, STEP_DOWNLOAD_COMPLETED)
+        dispatchStep(onStep, STEP_SAVING_RECORD)
+
+        // 入库必须在本流程内完成：记录写进去之后，重复触发才会被数据库这一层挡住
+        database.videoDao().insert(
+            DouyinVideo(
+                url = normalizedUrl,
+                title = title,
+                savedImagePaths = savedImagePaths.joinToString(","),
+                savedVideoPath = savedVideoPaths.joinToString(",")
             )
-            withContext(Dispatchers.Main) {
-                onComplete()
-            }
+        )
+        withContext(Dispatchers.Main) {
+            onComplete()
         }
     }
 

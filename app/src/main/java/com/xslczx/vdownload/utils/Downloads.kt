@@ -7,13 +7,11 @@ import com.blankj.utilcode.util.PermissionUtils
 import com.blankj.utilcode.util.Utils
 import com.xslczx.vdownload.Media
 import com.xslczx.vdownload.MyApp
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
@@ -147,20 +145,19 @@ private fun resolveOutputDirectory(mediaCategory: MediaCategory): File {
 
 /**
  * 批量并发下载入口
+ *
+ * 挂起直到所有并发任务完成并返回结果，调用方可以据此把「任务进行中」的标记
+ * 保留到本次下载彻底结束，避免下载过程中被重复触发。
  */
-fun downloadAllMedia(
+suspend fun downloadAllMedia(
     urls: List<Media>,
     concurrency: Int = 3,
-    scope: CoroutineScope,
     onEachProgress: (url: String, progress: Int) -> Unit = { _, _ -> },
-    onOverallProgress: (overallPercent: Int) -> Unit = {},
-    onAllComplete: (Map<String, DownloadResult>) -> Unit
-): Job {
+    onOverallProgress: (overallPercent: Int) -> Unit = {}
+): Map<String, DownloadResult> = coroutineScope {
     if (urls.isEmpty()) {
-        return scope.launch {
-            onOverallProgress(100)
-            onAllComplete(emptyMap())
-        }
+        onOverallProgress(100)
+        return@coroutineScope emptyMap()
     }
 
     val client = OkHttpClient.Builder()
@@ -179,28 +176,26 @@ fun downloadAllMedia(
     }
 
     val semaphore = Semaphore(concurrency.coerceAtLeast(1))
-    return scope.launch {
-        val downloadTasks = urls.map { media ->
-            async {
-                semaphore.withPermit {
-                    val result = downloadSingle(media.path, client, onProgress = { progress ->
-                        progressMap[media.path] = progress
-                        onEachProgress(media.path, progress)
-                        onOverallProgress(computeOverallProgress())
-                    })
+    val downloadTasks = urls.map { media ->
+        async {
+            semaphore.withPermit {
+                val result = downloadSingle(media.path, client, onProgress = { progress ->
+                    progressMap[media.path] = progress
+                    onEachProgress(media.path, progress)
+                    onOverallProgress(computeOverallProgress())
+                })
 
-                    if (result.file != null) {
-                        progressMap[media.path] = 100
-                        onOverallProgress(computeOverallProgress())
-                    }
-
-                    media.path to result
+                if (result.file != null) {
+                    progressMap[media.path] = 100
+                    onOverallProgress(computeOverallProgress())
                 }
+
+                media.path to result
             }
         }
-
-        val results = downloadTasks.awaitAll().toMap()
-        onOverallProgress(100)
-        onAllComplete(results)
     }
+
+    val results = downloadTasks.awaitAll().toMap()
+    onOverallProgress(100)
+    results
 }

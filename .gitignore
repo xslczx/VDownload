@@ -10,3 +10,9 @@ local.properties
 /.idea/
 /app/build
 /.codegraph/
+
+# 签名密钥（公开仓库，严禁提交）
+keystore.properties
+app/signing/
+*.jks
+*.keystore
