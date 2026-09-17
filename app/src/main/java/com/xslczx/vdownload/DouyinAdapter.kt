@@ -41,7 +41,8 @@ class DouyinAdapter(
 
         videos.removeAt(position)
         notifyItemRemoved(position)
-        notifyItemRangeChanged(position, videos.size)
+        // 删除后 size 已减一，position 之后的存量是 size - position
+        notifyItemRangeChanged(position, videos.size - position)
     }
 
     @SuppressLint("NotifyDataSetChanged")

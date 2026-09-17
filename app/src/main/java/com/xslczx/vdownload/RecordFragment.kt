@@ -1,14 +1,13 @@
 package com.xslczx.vdownload
 
 import android.Manifest
-import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
 import android.os.Bundle
 import android.os.Environment
 import android.util.Log
 import android.view.View
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
+import androidx.activity.result.ActivityResultLauncher
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.isVisible
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
@@ -20,11 +19,13 @@ import com.kongzue.dialogx.dialogs.MessageDialog
 import com.kongzue.dialogx.dialogs.TipDialog
 import com.kongzue.dialogx.dialogs.WaitDialog
 import com.xslczx.vdownload.databinding.LayoutHomeRecordBinding
+import com.xslczx.vdownload.databse.DouyinVideo
 import com.xslczx.vdownload.utils.MediaCategory
 import com.xslczx.vdownload.utils.MediaTypeDetector
 import com.xslczx.vdownload.utils.StoragePermissionHelper
 import com.xslczx.vdownload.utils.md5
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -32,13 +33,27 @@ import java.io.File
 class RecordFragment : Fragment(R.layout.layout_home_record) {
 
     private companion object {
-        const val STORAGE_PERMISSION_REQUEST_CODE = 333
         const val EXPORT_START_MESSAGE = "开始下载"
         const val EXPORT_FAILED_MESSAGE = "导出失败"
     }
 
     private val binding by lazy { LayoutHomeRecordBinding.bind(requireView()) }
     private val viewModel by lazy { ViewModelProvider(this)[DouyinViewModel::class.java] }
+    private var pendingExportPath: String? = null
+    private var statsJob: Job? = null
+
+    // Fragment 结果 API 接收授权回调：权限是面向系统的请求，
+    // 依赖 Activity 分发的 onRequestPermissionsResult 在 Fragment 里收不到，
+    // 之前用 ActivityCompat.requestPermissions 发起后授权流程就断了。
+    private val storagePermissionLauncher: ActivityResultLauncher<String> =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val exportPath = pendingExportPath
+            pendingExportPath = null
+            if (granted && exportPath != null) {
+                alertDownload(exportPath)
+            }
+        }
+
     private val douyinAdapter by lazy {
         DouyinAdapter(
             mutableListOf(),
@@ -56,6 +71,7 @@ class RecordFragment : Fragment(R.layout.layout_home_record) {
             },
             onImageDownload = { media ->
                 if (!hasStoragePermission()) {
+                    pendingExportPath = media.path
                     requestStoragePermission()
                     return@DouyinAdapter
                 }
@@ -127,19 +143,12 @@ class RecordFragment : Fragment(R.layout.layout_home_record) {
     }
 
     private fun hasStoragePermission(): Boolean {
-        return ContextCompat.checkSelfPermission(
-            requireContext(),
-            Manifest.permission.WRITE_EXTERNAL_STORAGE
-        ) == PackageManager.PERMISSION_GRANTED
+        return StoragePermissionHelper.hasStoragePermission(requireContext())
     }
 
     private fun requestStoragePermission() {
         StoragePermissionHelper.markRequested(requireContext())
-        ActivityCompat.requestPermissions(
-            requireActivity(),
-            arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
-            STORAGE_PERMISSION_REQUEST_CODE
-        )
+        storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
     }
 
     private suspend fun exportMediaToPublicDirectory(sourceFile: File): ExportResult {
@@ -182,26 +191,19 @@ class RecordFragment : Fragment(R.layout.layout_home_record) {
         }
     }
 
-    private fun updateRecordStats(videos: List<com.xslczx.vdownload.databse.DouyinVideo>) {
-        val mediaStats = videos
-            .flatMap { video ->
-                parseMediaPaths(video.savedImagePaths) + parseMediaPaths(video.savedVideoPath)
+    // 文件类型检测要逐个读文件头（磁盘 IO），放到 ViewModel 的 IO 协程里算，
+    // 主线程只负责把结果写回 UI；新发射的数据会取消上一次未完成的统计。
+    private fun updateRecordStats(videos: List<DouyinVideo>) {
+        statsJob?.cancel()
+        statsJob = lifecycleScope.launch {
+            val stats = viewModel.computeMediaStats(videos)
+            if (!isAdded) {
+                return@launch
             }
-            .mapNotNull { path ->
-                path.takeIf { it.isNotBlank() }?.let { MediaTypeDetector.detect(file = File(it)).category }
-            }
-
-        binding.videoCount.text = mediaStats.count { it == MediaCategory.VIDEO }.toString()
-        binding.imageCount.text = mediaStats.count { it == MediaCategory.IMAGE }.toString()
-        binding.audioCount.text = mediaStats.count { it == MediaCategory.AUDIO }.toString()
-    }
-
-    private fun parseMediaPaths(rawPaths: String?): List<String> {
-        return rawPaths
-            ?.split(",")
-            ?.map(String::trim)
-            ?.filter(String::isNotEmpty)
-            .orEmpty()
+            binding.videoCount.text = stats.videoCount.toString()
+            binding.imageCount.text = stats.imageCount.toString()
+            binding.audioCount.text = stats.audioCount.toString()
+        }
     }
 
     fun refreshRecords() {

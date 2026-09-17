@@ -1,6 +1,4 @@
 [versions]
-agp = "8.3.2"
-kotlin = "2.2.21"
 coreKtx = "1.10.1"
 lifecycleRuntimeKtx = "2.6.1"
 
@@ -12,7 +10,6 @@ androidx-lifecycle-livedata-ktx = { group = "androidx.lifecycle", name = "lifecy
 androidx-appcompat = "androidx.appcompat:appcompat:1.7.1"
 androidx-recyclerview = "androidx.recyclerview:recyclerview:1.2.1"
 
-[plugins]
-android-application = { id = "com.android.application", version.ref = "agp" }
-kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
-
+# AGP 与 Kotlin 插件版本统一在根 build.gradle.kts 的 buildscript 里维护
+# （AGP 8.3.2 / Kotlin 1.9.22，KSP 1.9.22-1.0.17 在 app/build.gradle.kts）。
+# 注意不要再在此处声明 plugins：此前遗留的 kotlin 2.2.21 与 KSP 1.9.22 不兼容。

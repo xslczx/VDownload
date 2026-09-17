@@ -4,11 +4,9 @@ import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
-import android.content.pm.PackageManager
 import android.os.Bundle
 import android.view.View
-import androidx.core.app.ActivityCompat
-import androidx.core.content.ContextCompat
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.view.doOnPreDraw
 import androidx.core.view.isVisible
 import androidx.core.widget.addTextChangedListener
@@ -27,7 +25,6 @@ import kotlinx.coroutines.launch
 
 class HomeFragment : Fragment(R.layout.layout_home_fragment) {
     private companion object {
-        const val STORAGE_PERMISSION_REQUEST_CODE = 333
         const val INITIAL_STEP_MESSAGE = "开始处理"
         const val COMPLETED_MESSAGE = "完成"
         const val INVALID_URL_MESSAGE = "链接无效"
@@ -35,6 +32,18 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
 
     private val binding by lazy { LayoutHomeFragmentBinding.bind(requireView()) }
     private val viewModel by lazy { ViewModelProvider(this)[DouyinViewModel::class.java] }
+    private var pendingParseAfterPermission = false
+
+    // 用 Fragment 结果 API 接授权回调：Activity 分发的 onRequestPermissionsResult
+    // 这里收不到；授权后续接解析，避免用户点完「允许」没有任何反应。
+    private val storagePermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            val shouldProceed = granted && pendingParseAfterPermission
+            pendingParseAfterPermission = false
+            if (shouldProceed) {
+                processCurrentInput()
+            }
+        }
     private val douyinAdapter by lazy {
         DouyinAdapter(
             mutableListOf(),
@@ -112,7 +121,7 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
             if (hasStoragePermission()) {
                 processCurrentInput()
             } else {
-                requestStoragePermission()
+                requestStoragePermission(forPendingParse = true)
             }
         }
     }
@@ -162,6 +171,10 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
             return
         }
 
+        // 触发时就同步记下链接（不管受理与否）：无效或正在处理中的链接若不记录，
+        // 之后每次 onResume 都会拿着同一段剪贴板重新触发一遍；手动点按钮不受影响。
+        lastAutoHandledUrl = ClipboardUtils.extractCleanUrl(inputText)
+
         lifecycleScope.launch {
             val waitDialog = WaitDialog.show(requireActivity(), INITIAL_STEP_MESSAGE)
             val accepted = viewModel.processClipboardContent(
@@ -185,14 +198,13 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
             )
 
             if (!accepted) {
-                // 链接正在处理中（或无效），这次触发直接丢弃
+                // 链接无效或正在处理中，这次触发直接丢弃（URL 已在触发时记录）
                 waitDialog.doDismiss()
                 return@launch
             }
 
-            // 受理后就把链接记下来并清空剪贴板：下载要花几秒到几十秒，
-            // 期间任何一次 onResume 都不该再拿着同一段剪贴板内容重新触发一遍。
-            lastAutoHandledUrl = ClipboardUtils.extractCleanUrl(inputText)
+            // 下载要花几秒到几十秒，期间任何一次 onResume 都不该再拿着
+            // 同一段剪贴板内容重新触发一遍，所以这里清空剪贴板。
             clearClipboard()
         }
     }
@@ -204,19 +216,13 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
     }
 
     private fun hasStoragePermission(): Boolean {
-        return ContextCompat.checkSelfPermission(
-            requireContext(),
-            Manifest.permission.WRITE_EXTERNAL_STORAGE
-        ) == PackageManager.PERMISSION_GRANTED
+        return StoragePermissionHelper.hasStoragePermission(requireContext())
     }
 
-    private fun requestStoragePermission() {
+    private fun requestStoragePermission(forPendingParse: Boolean = false) {
         StoragePermissionHelper.markRequested(requireContext())
-        ActivityCompat.requestPermissions(
-            requireActivity(),
-            arrayOf(Manifest.permission.WRITE_EXTERNAL_STORAGE),
-            STORAGE_PERMISSION_REQUEST_CODE
-        )
+        pendingParseAfterPermission = forPendingParse
+        storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
     }
 
     private fun currentInputText(): String {

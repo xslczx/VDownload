@@ -14,10 +14,21 @@ class MainActivity : AppCompatActivity() {
     private companion object {
         val TAB_ICON_UNSELECTED = intArrayOf(R.drawable.ic_home, R.drawable.ic_mine)
         val TAB_ICON_SELECTED = intArrayOf(R.drawable.ic_home_s, R.drawable.ic_mine_s)
+        const val STATE_CURRENT_TAB = "current_tab_index"
+        fun tabTag(position: Int) = "tab_$position"
     }
 
     private val binding by lazy { LayoutMainActivityBinding.inflate(layoutInflater) }
-    private val fragments = arrayListOf<Fragment>(HomeFragment(), RecordFragment())
+
+    // 旋转重建时 FragmentManager 会按 tag 恢复旧实例，这里必须复用它们；
+    // 字段初始化 new 出来的新实例会让 onResume 误判 isAdded 再 add 一次，
+    // 造成两个同名 Fragment 叠加、事件重复触发。
+    private val fragments: List<Fragment> by lazy {
+        listOf(
+            supportFragmentManager.findFragmentByTag(tabTag(0)) ?: HomeFragment(),
+            supportFragmentManager.findFragmentByTag(tabTag(1)) ?: RecordFragment()
+        )
+    }
 
     private var currentTabIndex = 0
 
@@ -25,9 +36,14 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(binding.root)
         setupSystemBars()
-        setupTabs()
         if (savedInstanceState == null) {
+            setupTabs(0)
             selectTab(0)
+        } else {
+            // Fragment 的显示/隐藏状态由 FragmentManager 自行恢复，这里只需
+            // 同步选中索引和 Tab 的视觉状态
+            currentTabIndex = savedInstanceState.getInt(STATE_CURRENT_TAB, 0)
+            setupTabs(currentTabIndex)
         }
     }
 
@@ -37,6 +53,11 @@ class MainActivity : AppCompatActivity() {
         if (!fragments[currentTabIndex].isAdded) {
             selectTab(currentTabIndex)
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putInt(STATE_CURRENT_TAB, currentTabIndex)
     }
 
     private fun setupSystemBars() {
@@ -50,10 +71,10 @@ class MainActivity : AppCompatActivity() {
         BarUtils.transparentNavBar(this)
     }
 
-    private fun setupTabs() {
+    private fun setupTabs(initialTabIndex: Int) {
         binding.homeTab.setOnClickListener { selectTab(0) }
         binding.mineTab.setOnClickListener { selectTab(1) }
-        updateTabSelection(0)
+        updateTabSelection(initialTabIndex)
     }
 
     private fun selectTab(position: Int) {
@@ -73,7 +94,7 @@ class MainActivity : AppCompatActivity() {
                 hide(currentFragment)
             }
             if (!targetFragment.isAdded) {
-                add(R.id.fl_content, targetFragment)
+                add(R.id.fl_content, targetFragment, tabTag(position))
             }
             show(targetFragment)
         }.commitAllowingStateLoss()

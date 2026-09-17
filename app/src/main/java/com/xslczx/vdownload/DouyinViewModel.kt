@@ -11,6 +11,7 @@ import com.xslczx.vdownload.databse.DouyinVideo
 import com.xslczx.vdownload.databse.DouyinVideoData
 import com.xslczx.vdownload.utils.DownloadResult
 import com.xslczx.vdownload.utils.MediaCategory
+import com.xslczx.vdownload.utils.MediaTypeDetector
 import com.xslczx.vdownload.utils.downloadAllMedia
 import com.xslczx.vdownload.utils.extractUrlFromClipboard
 import com.xslczx.vdownload.utils.fetchVideoInfo
@@ -59,6 +60,33 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
         viewModelScope.launch {
             videosLiveData.postValue(database.videoDao().getAll())
         }
+    }
+
+    /**
+     * 统计所有记录里的媒体数量。文件类型靠读文件头判断（磁盘 IO），
+     * 必须在 IO 线程执行，调用方（RecordFragment）只在主线程消费结果。
+     */
+    suspend fun computeMediaStats(videos: List<DouyinVideo>): MediaStats =
+        withContext(Dispatchers.IO) {
+            val categories = videos.flatMap { video ->
+                parseMediaPaths(video.savedImagePaths) + parseMediaPaths(video.savedVideoPath)
+            }.mapNotNull { path ->
+                path.takeIf { it.isNotBlank() }
+                    ?.let { MediaTypeDetector.detect(file = File(it)).category }
+            }
+            MediaStats(
+                videoCount = categories.count { it == MediaCategory.VIDEO },
+                imageCount = categories.count { it == MediaCategory.IMAGE },
+                audioCount = categories.count { it == MediaCategory.AUDIO }
+            )
+        }
+
+    private fun parseMediaPaths(rawPaths: String?): List<String> {
+        return rawPaths
+            ?.split(",")
+            ?.map(String::trim)
+            ?.filter(String::isNotEmpty)
+            .orEmpty()
     }
 
     fun deleteVideo(video: DouyinVideo, onComplete: (() -> Unit)? = null) {
@@ -196,13 +224,16 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
         onComplete: () -> Unit,
         onError: (String) -> Unit
     ) {
-        exportToGallery(results)
         Log.d(">>>:download", "下载:${results.values}")
 
         if (results.isEmpty() || results.values.any { it.file == null }) {
             dispatchStep(onError, ERROR_DOWNLOAD_FAILED)
             return
         }
+
+        // 只有全部成功（即将写库）才扫描进相册：部分失败时提前扫描会让
+        // 成功的文件出现在相册里，而应用内没有任何对应记录。
+        exportToGallery(results)
 
         val savedVideoPaths = extractSavedPaths(results, MediaCategory.VIDEO)
         val savedImagePaths = extractSavedPaths(results, MediaCategory.IMAGE)
@@ -248,3 +279,9 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 }
+
+data class MediaStats(
+    val videoCount: Int,
+    val imageCount: Int,
+    val audioCount: Int
+)

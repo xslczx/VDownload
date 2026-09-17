@@ -23,6 +23,11 @@ object StoragePermissionHelper {
     private const val KEY_AUTO_PARSE_ENABLED = "auto_parse_enabled"
 
     fun hasStoragePermission(context: Context): Boolean {
+        if (Build.VERSION.SDK_INT >= 33) {
+            // API 33 起 WRITE_EXTERNAL_STORAGE 已废弃且系统自动授予，
+            // 运行时检查不再反映真实可用性，直接按已授权处理
+            return true
+        }
         return ContextCompat.checkSelfPermission(
             context,
             Manifest.permission.WRITE_EXTERNAL_STORAGE

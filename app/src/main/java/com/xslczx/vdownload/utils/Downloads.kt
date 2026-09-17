@@ -7,6 +7,7 @@ import com.blankj.utilcode.util.PermissionUtils
 import com.blankj.utilcode.util.Utils
 import com.xslczx.vdownload.Media
 import com.xslczx.vdownload.MyApp
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -20,7 +21,6 @@ import okhttp3.Request
 import java.io.File
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.TimeUnit
 
 /**
  * 下载单个 URL，返回保存的 File（失败抛异常）
@@ -48,6 +48,8 @@ suspend fun downloadSingle(
                         contentDisposition = response.header("Content-Disposition")
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Exception) {
             }
 
@@ -104,6 +106,9 @@ suspend fun downloadSingle(
             }
 
             return@withContext DownloadResult(file = targetFile, media = detectedMedia.category)
+        } catch (e: CancellationException) {
+            // 协程取消不能当成下载失败进重试，必须原样上抛
+            throw e
         } catch (exception: Exception) {
             lastError = exception
             delay(300L * (attempt + 1))
@@ -160,11 +165,8 @@ suspend fun downloadAllMedia(
         return@coroutineScope emptyMap()
     }
 
-    val client = OkHttpClient.Builder()
-        .followRedirects(true)
-        .followSslRedirects(true)
-        .callTimeout(90, TimeUnit.SECONDS)
-        .build()
+    // 复用全局客户端：每次批量新建再废弃会重复分配连接池与线程池
+    val client = sharedOkHttpClient
 
     val progressMap = ConcurrentHashMap<String, Int>()
     urls.forEach { progressMap[it.path] = 0 }
