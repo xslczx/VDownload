@@ -108,7 +108,16 @@ object MediaTypeDetector {
     fun detect(contentType: String?=null, file: File? = null): DetectedMedia {
         file?.takeIf { it.exists() && it.canRead() }?.let {
             val header = ByteArray(64)
-            it.inputStream().use { stream -> stream.read(header) }
+            // 单次 read 不保证读满缓冲区（返回值是实际读取字节数），
+            // 必须循环读到 EOF 或读满，否则 header 尾部残留零填充导致魔数误判
+            it.inputStream().use { stream ->
+                var offset = 0
+                while (offset < header.size) {
+                    val bytesRead = stream.read(header, offset, header.size - offset)
+                    if (bytesRead < 0) break
+                    offset += bytesRead
+                }
+            }
 
             // Ogg 细分
             if (header.startsWith("OggS".toByteArray())) {

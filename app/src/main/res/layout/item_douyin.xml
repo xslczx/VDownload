@@ -25,7 +25,6 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="2dp"
         android:textColor="@color/primaryTextColor"
-        android:textIsSelectable="true"
         android:textSize="15sp"
         android:textStyle="bold" />
 

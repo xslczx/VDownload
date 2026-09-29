@@ -1,7 +1,6 @@
 package com.xslczx.vdownload
 
 import android.Manifest
-import android.media.MediaScannerConnection
 import android.os.Bundle
 import android.os.Environment
 import android.util.Log
@@ -20,6 +19,7 @@ import com.kongzue.dialogx.dialogs.TipDialog
 import com.kongzue.dialogx.dialogs.WaitDialog
 import com.xslczx.vdownload.databinding.LayoutHomeRecordBinding
 import com.xslczx.vdownload.databse.DouyinVideo
+import com.xslczx.vdownload.utils.GalleryExporter
 import com.xslczx.vdownload.utils.MediaCategory
 import com.xslczx.vdownload.utils.MediaTypeDetector
 import com.xslczx.vdownload.utils.StoragePermissionHelper
@@ -126,11 +126,10 @@ class RecordFragment : Fragment(R.layout.layout_home_record) {
                             "已导出到 ${exportResult.directoryType} 目录",
                             WaitDialog.TYPE.SUCCESS
                         )
-                        MediaScannerConnection.scanFile(
+                        // 带媒体类型 MIME 扫描，部分 ROM 对无 MIME 文件不索引进相册
+                        GalleryExporter.export(
                             requireContext(),
-                            arrayOf(exportResult.exportedFile.absolutePath),
-                            null,
-                            null
+                            listOf(exportResult.exportedFile to exportResult.category)
                         )
                     }.onFailure { throwable ->
                         Log.e("RecordFragment", "Failed to export media: $path", throwable)
@@ -167,15 +166,19 @@ class RecordFragment : Fragment(R.layout.layout_home_record) {
         val extensionSuffix = sourceFile.extension.takeIf { it.isNotBlank() }?.let { ".$it" }.orEmpty()
         val exportFile = File(targetDirectory, sourceFile.name.md5() + extensionSuffix)
         withContext(Dispatchers.IO) {
-            FileUtils.copy(sourceFile, exportFile)
+            // utilcodex 的 copy 失败返回 false 而不抛异常，不检查会误报导出成功
+            if (!FileUtils.copy(sourceFile, exportFile)) {
+                error("copy failed: $sourceFile -> $exportFile")
+            }
         }
         Log.d(">>>:Export", "Exported $sourceFile to $exportFile")
-        return ExportResult(exportFile, directoryType)
+        return ExportResult(exportFile, directoryType, detectedMedia.category)
     }
 
     private data class ExportResult(
         val exportedFile: File,
-        val directoryType: String
+        val directoryType: String,
+        val category: MediaCategory
     )
 
     private fun toggleContentState(isEmpty: Boolean) {

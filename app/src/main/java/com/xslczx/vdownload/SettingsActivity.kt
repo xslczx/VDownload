@@ -6,10 +6,15 @@ import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.lifecycleScope
 import com.blankj.utilcode.util.BarUtils
+import com.kongzue.dialogx.dialogs.TipDialog
+import com.kongzue.dialogx.dialogs.WaitDialog
 import com.xslczx.vdownload.databinding.ActivitySettingsBinding
 import com.xslczx.vdownload.utils.StoragePermissionHelper
 import com.xslczx.vdownload.utils.StoragePermissionState
+import com.xslczx.vdownload.utils.UpdateManager
+import kotlinx.coroutines.launch
 
 class SettingsActivity : AppCompatActivity() {
     private companion object {
@@ -46,6 +51,28 @@ class SettingsActivity : AppCompatActivity() {
         binding.autoParseSwitch.setOnCheckedChangeListener { _, isChecked ->
             StoragePermissionHelper.setAutoParseEnabled(this, isChecked)
             renderAutoParseHint(isChecked)
+        }
+        setupUpdateEntry()
+    }
+
+    /** 设置页常驻的「检查更新」入口：手动检查不受「忽略该版本」记录影响 */
+    private fun setupUpdateEntry() {
+        binding.updateHint.text = "当前版本 ${UpdateManager.currentVersionName(this)}，检查蒲公英上的最新版本。"
+        binding.updateActionButton.setOnClickListener {
+            binding.updateActionButton.isEnabled = false
+            lifecycleScope.launch {
+                when (val result = UpdateManager.checkUpdate(this@SettingsActivity)) {
+                    is UpdateManager.CheckResult.NewVersion ->
+                        UpdateManager.showUpdateDialog(this@SettingsActivity, result.release, auto = false)
+
+                    is UpdateManager.CheckResult.UpToDate ->
+                        TipDialog.show(this@SettingsActivity, "已是最新版本", WaitDialog.TYPE.SUCCESS, 800L)
+
+                    is UpdateManager.CheckResult.Failed ->
+                        TipDialog.show(this@SettingsActivity, "检查失败：${result.error.message}", WaitDialog.TYPE.ERROR)
+                }
+                binding.updateActionButton.isEnabled = true
+            }
         }
     }
 

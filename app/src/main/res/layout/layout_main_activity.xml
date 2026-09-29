@@ -25,6 +25,7 @@
 
         <LinearLayout
             android:id="@+id/home_tab"
+            android:contentDescription="@string/tab_home"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_weight="1"
@@ -53,6 +54,7 @@
 
         <LinearLayout
             android:id="@+id/mine_tab"
+            android:contentDescription="@string/tab_mine"
             android:layout_width="0dp"
             android:layout_height="match_parent"
             android:layout_marginStart="6dp"

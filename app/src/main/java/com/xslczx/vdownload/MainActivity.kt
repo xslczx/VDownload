@@ -45,6 +45,8 @@ class MainActivity : AppCompatActivity() {
             currentTabIndex = savedInstanceState.getInt(STATE_CURRENT_TAB, 0)
             setupTabs(currentTabIndex)
         }
+        // 打开 App 自动检查更新；被用户忽略过的版本不再自动提示
+        com.xslczx.vdownload.utils.UpdateManager.autoCheck(this)
     }
 
     override fun onResume() {

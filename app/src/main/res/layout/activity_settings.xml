@@ -171,6 +171,55 @@
             android:layout_marginStart="12dp" />
     </LinearLayout>
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginHorizontal="18dp"
+        android:layout_marginTop="14dp"
+        android:background="@drawable/bg_surface_card_18"
+        android:elevation="3dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:padding="18dp">
+
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="检查更新"
+                android:textColor="@color/primaryTextColor"
+                android:textSize="18sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/update_hint"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:text="当前版本 1.2，检查蒲公英上的最新版本。"
+                android:textColor="@color/secondaryTextColor"
+                android:textSize="13sp" />
+        </LinearLayout>
+
+        <TextView
+            android:id="@+id/update_action_button"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:layout_marginStart="12dp"
+            android:background="@drawable/bg_accent_r4"
+            android:gravity="center"
+            android:paddingHorizontal="16dp"
+            android:text="检查更新"
+            android:textColor="@color/white"
+            android:textSize="14sp"
+            android:textStyle="bold" />
+    </LinearLayout>
+
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"

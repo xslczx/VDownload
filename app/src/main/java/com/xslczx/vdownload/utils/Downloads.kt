@@ -36,6 +36,7 @@ suspend fun downloadSingle(
     }
 
     var lastError: Exception? = null
+    var temporaryFile: File? = null
     repeat(retries + 1) { attempt ->
         try {
             var contentType: String? = null
@@ -60,14 +61,15 @@ suspend fun downloadSingle(
             val sanitizedFileName = sanitizeFileName(rawFileName)
             val targetDirectory = resolveOutputDirectory(detectedMedia.category)
             val targetFile = ExtensionGuesser.uniqueFile(targetDirectory, sanitizedFileName, extensionResult.extension)
-            val temporaryFile = File(
+            val tempFile = File(
                 MyApp.instance.cacheDir,
                 "${targetFile.nameWithoutExtension}.${extensionResult.extension}.part"
             )
+            temporaryFile = tempFile
 
             Log.d(
                 ">>>>:FilePaths",
-                "Target file: ${targetFile.absolutePath}, Temp file: ${temporaryFile.absolutePath}"
+                "Target file: ${targetFile.absolutePath}, Temp file: ${tempFile.absolutePath}"
             )
 
             val downloadRequest = Request.Builder().url(url).get().build()
@@ -78,7 +80,7 @@ suspend fun downloadSingle(
 
                 val responseBody = response.body ?: throw RuntimeException("空响应体")
                 val totalBytes = responseBody.contentLength().takeIf { it > 0 } ?: -1L
-                temporaryFile.outputStream().buffered().use { outputStream ->
+                tempFile.outputStream().buffered().use { outputStream ->
                     responseBody.byteStream().use { inputStream ->
                         val buffer = ByteArray(8 * 1024)
                         var bytesRead: Int
@@ -100,10 +102,11 @@ suspend fun downloadSingle(
                 }
             }
 
-            if (!temporaryFile.renameTo(targetFile)) {
-                temporaryFile.copyTo(targetFile, overwrite = true)
-                temporaryFile.delete()
+            if (!tempFile.renameTo(targetFile)) {
+                tempFile.copyTo(targetFile, overwrite = true)
+                tempFile.delete()
             }
+            temporaryFile = null // 已成功落盘，无需再清理
 
             return@withContext DownloadResult(file = targetFile, media = detectedMedia.category)
         } catch (e: CancellationException) {
@@ -111,16 +114,24 @@ suspend fun downloadSingle(
             throw e
         } catch (exception: Exception) {
             lastError = exception
+            // 失败的半成品临时文件没有保留价值，留在 cacheDir 只会持续占空间
+            temporaryFile?.delete()
             delay(300L * (attempt + 1))
         }
     }
 
-    DownloadResult(exception = lastError)
+    DownloadResult(exception = lastError).also {
+        // 所有重试都失败时兜底再清一次，防止异常路径下的残留
+        temporaryFile?.delete()
+    }
 }
+
+// 每个下载文件都会调用，正则预编译成常量避免重复编译
+private val illegalFileNameChars = "[^a-zA-Z0-9._-]".toRegex()
 
 private fun sanitizeFileName(rawFileName: String): String {
     return rawFileName
-        .replace("[^a-zA-Z0-9._-]".toRegex(), "_")
+        .replace(illegalFileNameChars, "_")
         .replace("~", "_")
         .replace(":", "_")
         .trim()

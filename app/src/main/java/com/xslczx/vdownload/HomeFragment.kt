@@ -61,8 +61,6 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
         )
     }
 
-    private var confirmationDialog: MessageDialog? = null
-
     /**
      * 已经交给解析流程的链接。onResume 会被权限弹窗关闭、切后台回来、从设置页返回等
      * 反复触发，靠它保证同一段剪贴板内容只自动解析一次。
@@ -82,12 +80,6 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
         super.onResume()
         updateClipboardHint()
         binding.etInput.doOnPreDraw { handleClipboardOnResume() }
-    }
-
-    override fun onPause() {
-        super.onPause()
-        confirmationDialog?.dismiss()
-        confirmationDialog = null
     }
 
     private fun setupRecyclerView() {
@@ -159,7 +151,6 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
 
             // Clipboard content can change while the fragment is in background, so we re-trigger
             // the same button flow to keep permission checks and UI state consistent in one place.
-            confirmationDialog?.dismiss()
             binding.urlBtn.callOnClick()
         }
     }
@@ -177,6 +168,9 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
 
         lifecycleScope.launch {
             val waitDialog = WaitDialog.show(requireActivity(), INITIAL_STEP_MESSAGE)
+            // DialogX 的 WaitDialog 是复用实例：处理期间再点按钮会 show/dismiss
+            // 相同实例，把上一次的等待框误关。处理期间禁用按钮做防抖。
+            binding.urlBtn.isEnabled = false
             val accepted = viewModel.processClipboardContent(
                 inputText,
                 onStep = { stepMessage ->
@@ -187,12 +181,14 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
                 onComplete = {
                     if (!isAdded) return@processClipboardContent
                     waitDialog.doDismiss()
+                    restoreParseButton()
                     TipDialog.show(requireActivity(), COMPLETED_MESSAGE, WaitDialog.TYPE.SUCCESS, 500L)
                     viewModel.refreshVideo(currentInputText())
                 },
                 onError = { errorMessage ->
                     if (!isAdded) return@processClipboardContent
                     waitDialog.doDismiss()
+                    restoreParseButton()
                     showErrorTip(errorMessage)
                 }
             )
@@ -200,6 +196,7 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
             if (!accepted) {
                 // 链接无效或正在处理中，这次触发直接丢弃（URL 已在触发时记录）
                 waitDialog.doDismiss()
+                restoreParseButton()
                 return@launch
             }
 
@@ -227,6 +224,13 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
 
     private fun currentInputText(): String {
         return binding.etInput.text?.toString().orEmpty().trim()
+    }
+
+    /** 解析流程结束后恢复解析按钮；仍要遵循「有输入才可点」的原有约束 */
+    private fun restoreParseButton() {
+        if (isAdded) {
+            binding.urlBtn.isEnabled = currentInputText().isNotBlank()
+        }
     }
 
     private fun showErrorTip(message: String) {

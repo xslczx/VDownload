@@ -2,7 +2,10 @@ package com.xslczx.vdownload.utils;
 
 public final class ClipboardUtils {
 
-    private static final String[] YEAR_SEGMENTS = {"2023/", "2024/", "2025/", "2026/"};
+    // 分享文案里常见的「/2024/ 复制此链接」类尾部杂质，泛化成年份段
+    // 避免硬编码 2023~2026 在 2027 年后失效；取最早出现的一段截断
+    private static final java.util.regex.Pattern YEAR_SEGMENT =
+            java.util.regex.Pattern.compile("[/ ](19|20)\\d{2}/");
 
     private ClipboardUtils() {
         throw new AssertionError("No instances");
@@ -29,11 +32,9 @@ public final class ClipboardUtils {
 
         url = url.replace("，", "");
 
-        for (String yearSegment : YEAR_SEGMENTS) {
-            int yearIndex = url.indexOf(yearSegment);
-            if (yearIndex > 0) {
-                url = url.substring(0, yearIndex);
-            }
+        java.util.regex.Matcher yearMatcher = YEAR_SEGMENT.matcher(url);
+        if (yearMatcher.find() && yearMatcher.start() > 0) {
+            url = url.substring(0, yearMatcher.start());
         }
 
         int spaceIndex = url.indexOf(" ");

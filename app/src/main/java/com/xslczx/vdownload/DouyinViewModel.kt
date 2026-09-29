@@ -1,7 +1,6 @@
 package com.xslczx.vdownload
 
 import android.app.Application
-import android.media.MediaScannerConnection
 import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.MutableLiveData
@@ -10,6 +9,7 @@ import com.xslczx.vdownload.databse.AppDatabase
 import com.xslczx.vdownload.databse.DouyinVideo
 import com.xslczx.vdownload.databse.DouyinVideoData
 import com.xslczx.vdownload.utils.DownloadResult
+import com.xslczx.vdownload.utils.GalleryExporter
 import com.xslczx.vdownload.utils.MediaCategory
 import com.xslczx.vdownload.utils.MediaTypeDetector
 import com.xslczx.vdownload.utils.downloadAllMedia
@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 class DouyinViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -169,6 +170,9 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
         }
 
         dispatchStep(onStep, STEP_DOWNLOADING)
+        // 并发任务的每个进度 tick 都会回调这里；相同总进度只投递一次，
+        // 避免为几十次重复百分比各起一个 Main 协程
+        val lastReportedProgress = AtomicInteger(-1)
         val results = downloadAllMedia(
             urls = mediaList,
             concurrency = 3,
@@ -176,8 +180,10 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
                 Log.d(">>>:Download", "Downloading $downloadUrl: $progress")
             },
             onOverallProgress = { progress ->
-                viewModelScope.launch(Dispatchers.Main) {
-                    onStep("正在下载 $progress%")
+                if (lastReportedProgress.getAndSet(progress) != progress) {
+                    viewModelScope.launch(Dispatchers.Main) {
+                        onStep("正在下载 $progress%")
+                    }
                 }
             }
         )
@@ -231,10 +237,8 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
             return
         }
 
-        // 只有全部成功（即将写库）才扫描进相册：部分失败时提前扫描会让
-        // 成功的文件出现在相册里，而应用内没有任何对应记录。
-        exportToGallery(results)
-
+        // 只有全部成功才继续：部分失败时提前导出会让成功文件出现在
+        // 相册里，而应用内没有任何对应记录。
         val savedVideoPaths = extractSavedPaths(results, MediaCategory.VIDEO)
         val savedImagePaths = extractSavedPaths(results, MediaCategory.IMAGE)
         dispatchStep(onStep, STEP_DOWNLOAD_COMPLETED)
@@ -249,6 +253,11 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
                 savedVideoPath = savedVideoPaths.joinToString(",")
             )
         )
+
+        // 入库成功后自动导出到系统相册：应用内已有对应记录，此时相册与
+        // 记录一一对应；导出放在入库之后，失败也不影响记录本身。
+        exportToGallery(results)
+
         withContext(Dispatchers.Main) {
             onComplete()
         }
@@ -264,19 +273,10 @@ class DouyinViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun exportToGallery(results: Map<String, DownloadResult>) {
-        val savedPaths = results.values.mapNotNull { it.file?.absolutePath }
-        if (savedPaths.isEmpty()) return
-
-        val existingPaths = savedPaths.filter { path -> File(path).exists() }
-        if (existingPaths.isEmpty()) return
-
-        MediaScannerConnection.scanFile(
-            getApplication(),
-            existingPaths.toTypedArray(),
-            null
-        ) { path, uri ->
-            Log.d("HomeFragment", "exportToGallery: $path -> $uri")
+        val exportedFiles = results.values.mapNotNull { result ->
+            result.file?.let { file -> file to result.media }
         }
+        GalleryExporter.export(getApplication(), exportedFiles)
     }
 }
 
