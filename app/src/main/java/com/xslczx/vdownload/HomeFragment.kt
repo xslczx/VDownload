@@ -132,7 +132,9 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
 
         val clipboardUrl = ClipboardUtils.extractCleanUrl(clipboardText)
         if (!clipboardUrl.isNullOrBlank()) {
-            binding.etInput.setText(clipboardText)
+            // 填清洗后的干净 URL 而不是原始分享文本：用户能直观看到
+            // 识别结果，后续解析、手动点按钮也都直接拿到干净链接
+            binding.etInput.setText(clipboardUrl)
         }
         viewModel.refreshVideo(currentInputText())
 
@@ -145,7 +147,13 @@ class HomeFragment : Fragment(R.layout.layout_home_fragment) {
                 return@launch
             }
             val shouldProcessClipboard = viewModel.shouldProcessClipboardContent(clipboardText)
-            if (!isAdded || !shouldProcessClipboard) {
+            if (!isAdded) {
+                return@launch
+            }
+            if (!shouldProcessClipboard) {
+                // 链接之前下载过：数据库已有记录，静默跳过会让用户以为
+                // 「解析不到链接」，给出明确提示并展示对应记录
+                TipDialog.show(requireActivity(), "该链接已下载过，已展示记录", WaitDialog.TYPE.SUCCESS, 1000L)
                 return@launch
             }
 
